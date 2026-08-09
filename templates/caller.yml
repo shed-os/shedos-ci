@@ -1,0 +1,11 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  pipeline:
+    uses: shed-os/shedos-ci/.github/workflows/package-pipeline.yml@main
+    with:
+      packages: '["."]'
+    secrets: inherit
