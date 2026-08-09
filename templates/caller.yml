@@ -8,4 +8,5 @@ jobs:
     uses: shed-os/shedos-ci/.github/workflows/package-pipeline.yml@main
     with:
       packages: '["."]'
-    secrets: inherit
+    secrets:
+      SHEDOS_DISPATCH_TOKEN: ${{ secrets.SHEDOS_DISPATCH_TOKEN }}

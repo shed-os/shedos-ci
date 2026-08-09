@@ -34,9 +34,17 @@ Copy `templates/caller.yml` into the package repo as
 `.github/workflows/ci.yml`. Set `packages` to the directories holding
 PKGBUILDs — `'["."]'` for a repo with one package at its root.
 
-`secrets: inherit` is required: the publish request authenticates with
-`SHEDOS_DISPATCH_TOKEN`, and without inheritance that secret arrives empty and
-the job stops with a message naming it.
+The caller has to pass `SHEDOS_DISPATCH_TOKEN` by name; the pipeline declares
+it as a required secret rather than taking whatever `secrets: inherit` hands
+over, so a repo that forgets it is told at the top of the run instead of at the
+publish step. The token is an organisation secret scoped to selected
+repositories — the package repos and shedos-release — not one visible to every
+repo in the org.
+
+`ci_ref` picks the shedos-ci ref the pipeline scripts come from, `main` by
+default. Nothing in a reusable workflow can see the ref it was called at, so a
+caller pinning `package-pipeline.yml@v1` has to pass `ci_ref: v1` as well or it
+will run v1's workflow with main's scripts.
 
 ## The dispatch contract
 
@@ -53,6 +61,13 @@ both repos at once.
 ## Tests
 
 `bash test/pipeline/run.sh` exercises the scripts on a workstation — no
-container, no root, no network. It builds a fixture package, drives the pkgrel
-guard against a hand-made staging database, and checks the dispatch body
-against the contract above with a stubbed `gh`.
+container, no root, nothing off this machine. It builds a fixture package,
+drives the pkgrel guard against a hand-made staging database, serves a 404 and
+refuses a connection on loopback to separate a first publish from a broken one,
+prints the makepkg invocation for both the sudo and the direct branch without
+running either, and checks the dispatch body against the contract above with a
+stubbed `gh`.
+
+`.github/workflows/ci.yml` runs that harness and parses every workflow file on
+every push and pull request, so the pipeline the package repos consume is gated
+by the same suite.

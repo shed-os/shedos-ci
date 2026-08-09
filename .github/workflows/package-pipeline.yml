@@ -18,6 +18,17 @@ on:
         description: Run the test job in a privileged container (loop devices, mounts).
         type: boolean
         default: false
+      ci_ref:
+        description: >-
+          The shedos-ci ref the pipeline scripts come from. Callers that pin
+          this workflow to a tag should pin this to the same one, since no
+          context exposes the ref a reusable workflow was called at.
+        type: string
+        default: main
+    secrets:
+      SHEDOS_DISPATCH_TOKEN:
+        description: Token the publish request authenticates with against shedos-release.
+        required: true
 
 permissions:
   contents: read
@@ -57,14 +68,12 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       # A reusable workflow's steps run against the caller's checkout, so the
-      # scripts this pipeline calls have to come from a second one. No context
-      # exposes the ref this workflow itself was called at, so callers pinning
-      # a tag would still get main here.
+      # scripts this pipeline calls have to come from a second one.
       - name: Check out the pipeline scripts
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: shed-os/shedos-ci
-          ref: main
+          ref: ${{ inputs.ci_ref }}
           path: .shedos-ci
 
       - name: Trust workspace for git
@@ -141,7 +150,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: shed-os/shedos-ci
-          ref: main
+          ref: ${{ inputs.ci_ref }}
           path: .shedos-ci
 
       - name: Fetch the built packages
