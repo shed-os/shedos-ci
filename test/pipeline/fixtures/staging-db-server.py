@@ -17,10 +17,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             f.write(self.headers.get("User-Agent", "") + "\n")
         self.send_error(404)
 
-    def log_message(self, *args):
+    def log_message(self, format, *args):
         pass
 
 
 server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-print("port %d" % server.server_address[1], flush=True)
+print(f"port {server.server_address[1]}", flush=True)
 server.serve_forever()
