@@ -28,6 +28,11 @@ them fails. A repo with no suites prints `no test suites` and passes. Set
 `shed-os/shedos-release`. Nothing is signed or uploaded here; publishing
 happens only in shedos-release.
 
+All three jobs run on the same `archlinux:latest` image, including this one,
+which needs no container of its own. It is there so the tools the scripts call
+are the versions the harness tests against — the runner's host image carries
+different ones.
+
 ## Adopting it
 
 Copy `templates/caller.yml` into the package repo as

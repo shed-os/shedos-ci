@@ -145,7 +145,18 @@ jobs:
     needs: [build, test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # Same image as the other two jobs on purpose. On the bare host this job
+    # ran against the runner's jq, which is a major version behind the one the
+    # harness tests with, and a jq program that compiled everywhere else was a
+    # syntax error here.
+    container:
+      image: archlinux:latest
     steps:
+      - name: Install dispatch dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --needed --noconfirm git github-cli jq
+
       - name: Check out the pipeline scripts
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
