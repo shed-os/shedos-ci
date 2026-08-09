@@ -39,6 +39,22 @@ join_argv() {
     printf '%s' "$*"
 }
 
+# Deep JSON comparison that does not go through jq, so the tool under test
+# cannot vouch for its own output.
+json_equal() {
+    python3 -c 'import json, os, sys
+for path in sys.argv[1:]:
+    if not os.path.exists(path):
+        print("   missing: " + path)
+        sys.exit(1)
+a = json.load(open(sys.argv[1]))
+b = json.load(open(sys.argv[2]))
+if a != b:
+    print("   got:  " + json.dumps(a, sort_keys=True))
+    print("   want: " + json.dumps(b, sort_keys=True))
+    sys.exit(1)' "$1" "$2"
+}
+
 fixture_repo() {
     local work=$1
     cp "$fixture/PKGBUILD" "$work/PKGBUILD"
@@ -255,6 +271,9 @@ case_staging_db_unusable() {
 }
 
 # --- case: the dispatch body matches the contract the publisher consumes.
+# The expected side is a literal below, never built with the jq program under
+# test, and the comparison runs through python so a broken jq cannot make a
+# mismatch look like a match.
 case_payload() {
     local work
     work=$(mktemp -d) || return 1
@@ -264,7 +283,12 @@ case_payload() {
     cat > "$work/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$GH_STUB_ARGV"
-cat > "$GH_STUB_STDIN"
+: > "$GH_STUB_BODY"
+prev=
+for arg in "$@"; do
+    [[ $prev == --input ]] && cp "$arg" "$GH_STUB_BODY"
+    prev=$arg
+done
 STUB
     chmod +x "$work/bin/gh"
 
@@ -272,41 +296,72 @@ STUB
     local sum=0000000000000000000000000000000000000000000000000000000000000001
     printf '%s  %s\n' "$sum" "$pkg" > "$work/dist/SHA256SUMS"
 
-    if ! (
+    cat > "$work/expected.json" <<EOF
+{"event_type": "publish-request",
+ "client_payload": {"repo": "shed-os/hello", "run_id": 1, "sha": "abc",
+   "artifact": "pkg-abc",
+   "packages": [{"file": "$pkg", "sha256": "$sum"}]}}
+EOF
+
+    local rc=0
+    (
         cd "$work" || exit 1
         PATH="$work/bin:$PATH" \
         GH_STUB_ARGV="$work/argv" \
-        GH_STUB_STDIN="$work/body.json" \
+        GH_STUB_BODY="$work/body.json" \
         GH_TOKEN=stub-token \
         GITHUB_REPOSITORY=shed-os/hello \
         GITHUB_RUN_ID=1 \
         GITHUB_SHA=abc \
             bash "$repo_root/scripts/request-publish.sh"
-    ) > "$work/dispatch.log" 2>&1; then
-        cat "$work/dispatch.log"
-        return 1
-    fi
+    ) > "$work/dispatch.log" 2>&1 || rc=$?
+    (( rc == 0 )) || cat "$work/dispatch.log"
 
+    check 'the dispatch exits clean' [ "$rc" -eq 0 ]
+    check 'a body was actually written' [ -s "$work/body.json" ]
     check 'dispatches to shedos-release' \
         grep -qx 'repos/shed-os/shedos-release/dispatches' "$work/argv"
+    check 'payload matches the frozen contract' \
+        json_equal "$work/body.json" "$work/expected.json"
+}
 
-    local want
-    want=$(jq -n --arg pkg "$pkg" --arg sum "$sum" '{
-        event_type: "publish-request",
-        client_payload: {
-            repo: "shed-os/hello",
-            run_id: 1,
-            sha: "abc",
-            artifact: "pkg-abc",
-            packages: [{file: $pkg, sha256: $sum}]
-        }
-    }')
-    if ! jq -e --argjson want "$want" '. == $want' "$work/body.json" > /dev/null; then
-        printf '   want: %s\n' "$(jq -c . <<<"$want")"
-        printf '   got:  %s\n' "$(jq -c . "$work/body.json" 2>/dev/null || cat "$work/body.json")"
-        return 1
-    fi
-    check 'payload matches the frozen contract' true
+# --- case: a payload that cannot be built must stop before the API call, not
+# hand an empty body to gh and let the server reject it.
+case_payload_build_failure() {
+    local work
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' RETURN
+
+    mkdir -p "$work/bin" "$work/dist"
+    cat > "$work/bin/jq" <<'STUB'
+#!/usr/bin/env bash
+echo 'jq: 1 compile error' >&2
+exit 3
+STUB
+    cat > "$work/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$GH_STUB_ARGV"
+STUB
+    chmod +x "$work/bin/jq" "$work/bin/gh"
+
+    printf '%s  %s\n' \
+        0000000000000000000000000000000000000000000000000000000000000001 \
+        shedos-ci-hello-1-1-any.pkg.tar.zst > "$work/dist/SHA256SUMS"
+
+    local rc=0
+    (
+        cd "$work" || exit 1
+        PATH="$work/bin:$PATH" \
+        GH_STUB_ARGV="$work/argv" \
+        GH_TOKEN=stub-token \
+        GITHUB_REPOSITORY=shed-os/hello \
+        GITHUB_RUN_ID=1 \
+        GITHUB_SHA=abc \
+            bash "$repo_root/scripts/request-publish.sh"
+    ) > "$work/dispatch.log" 2>&1 || rc=$?
+
+    check 'a payload that will not build fails the job' [ "$rc" -ne 0 ]
+    check 'and gh is never reached' [ ! -e "$work/argv" ]
 }
 
 # --- case: without the dispatch secret the publish must stop and say so.
@@ -334,7 +389,8 @@ case_missing_secret() {
 }
 
 for case in case_build case_pkgrel_guard case_decimal_pkgrel case_makepkg_argv \
-           case_staging_db_404 case_staging_db_unusable case_payload case_missing_secret; do
+           case_staging_db_404 case_staging_db_unusable case_payload \
+           case_payload_build_failure case_missing_secret; do
     printf '════════ %s ════════\n' "${case#case_}"
     if ! "$case"; then
         fail=$((fail + 1))

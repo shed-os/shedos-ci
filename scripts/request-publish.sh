@@ -20,9 +20,18 @@ if [[ ! -s $SUMS ]]; then
     exit 1
 fi
 
+payload=$(mktemp)
+trap 'rm -f "$payload"' EXIT
+
 packages=$(awk 'NF {print $1 "\t" $NF}' "$SUMS" \
     | jq -Rn '[inputs | split("\t") | {file: .[1], sha256: .[0]}]')
 
+# Written to a file rather than piped into gh: a jq that fails to compile the
+# program still leaves gh running on the other end of a pipe, which is how a
+# broken payload once reached the API as an empty body. The concatenation is
+# parenthesized because jq 1.7 rejects a bare + as an object value and 1.8
+# does not, so the unparenthesized form works on a workstation and breaks on
+# a runner.
 jq -n \
     --arg repo "$GITHUB_REPOSITORY" \
     --argjson run_id "$GITHUB_RUN_ID" \
@@ -33,9 +42,10 @@ jq -n \
           repo: $repo,
           run_id: $run_id,
           sha: $sha,
-          artifact: "pkg-" + $sha,
+          artifact: ("pkg-" + $sha),
           packages: $packages
-      }}' \
-    | gh api "repos/shed-os/shedos-release/dispatches" --method POST --input -
+      }}' > "$payload"
+
+gh api "repos/shed-os/shedos-release/dispatches" --method POST --input "$payload"
 
 echo "publish requested for $GITHUB_REPOSITORY@$GITHUB_SHA"
