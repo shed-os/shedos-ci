@@ -64,7 +64,7 @@ case_build() {
         grep -qF 'staging DB absent — first publish' "$work/build.log"
 
     local listing
-    listing=$(find "$work/dist" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | sort | tr '\n' ' ')
+    listing=$(find "$work/dist" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')
     check 'dist holds the package and SHA256SUMS' \
         [ "$listing" = 'SHA256SUMS shedos-ci-hello-1-1-any.pkg.tar.zst ' ]
 
@@ -100,6 +100,31 @@ case_pkgrel_guard() {
 
     check 'the bumped package is what got built' \
         [ -f "$work/dist/shedos-ci-hello-1-2-any.pkg.tar.zst" ]
+}
+
+# --- case: a decimal pkgrel must move forward, never back to its integer part.
+case_decimal_pkgrel() {
+    local work
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' RETURN
+
+    fixture_repo "$work"
+    sed -i 's/^pkgrel=.*/pkgrel=1.1/' "$work/PKGBUILD"
+    git -C "$work" \
+        -c user.name=harness -c user.email=harness@shedos.invalid \
+        commit -qam 'go decimal'
+
+    mkdir -p "$work/db/shedos-ci-hello-1-1.1"
+    : > "$work/db/shedos-ci-hello-1-1.1/desc"
+    tar -czf "$work/staging.db" -C "$work/db" shedos-ci-hello-1-1.1
+
+    if ! build_package "$work" "file://$work/staging.db"; then
+        cat "$work/build.log"
+        return 1
+    fi
+
+    check 'decimal pkgrel bumps forward' \
+        grep -qx 'pkgrel=2' "$work/PKGBUILD"
 }
 
 # --- case: the dispatch body matches the contract the publisher consumes.
@@ -181,7 +206,7 @@ case_missing_secret() {
     check 'missing secret is named' grep -qF 'SHEDOS_DISPATCH_TOKEN' <<<"$out"
 }
 
-for case in case_build case_pkgrel_guard case_payload case_missing_secret; do
+for case in case_build case_pkgrel_guard case_decimal_pkgrel case_payload case_missing_secret; do
     printf '════════ %s ════════\n' "${case#case_}"
     if ! "$case"; then
         fail=$((fail + 1))
