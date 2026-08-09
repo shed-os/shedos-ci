@@ -29,7 +29,11 @@ fetch_staging_db() {
     db=$(mktemp)
     err=$(mktemp)
 
-    code=$(curl -sSL --max-time 60 -o "$db" -w '%{http_code}' "$STAGING_DB_URL" 2> "$err") || rc=$?
+    # Cloudflare's managed rules drop datacenter traffic that does not name
+    # itself, and a GitHub runner is a datacenter address: without this the
+    # repo answers 403 from CI and 404 from a desk.
+    code=$(curl -sSL --max-time 60 -A 'shedos-ci (+https://shedos.org)' \
+        -o "$db" -w '%{http_code}' "$STAGING_DB_URL" 2> "$err") || rc=$?
 
     # 37 is curl's "could not read file", i.e. a file:// URL with nothing
     # behind it. Over HTTP the same absence arrives as a 404.

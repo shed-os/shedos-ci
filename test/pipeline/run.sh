@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 # Exercises the pipeline scripts on a normal workstation: no container, no
-# root, no network. Every case works in a throwaway directory, builds the
-# hello fixture as the invoking user (SHEDOS_BUILD_USER) and points the
-# staging-DB lookup at a file:// URL, so nothing here reaches the real repo.
+# root, nothing off this machine. Every case works in a throwaway directory,
+# builds the hello fixture as the invoking user (SHEDOS_BUILD_USER) and points
+# the staging-DB lookup at a file:// URL or a loopback server, so nothing here
+# reaches the real repo.
 set -uo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd -- "$here/../.." && pwd)
-fixture="$here/fixtures/hello"
+fixture_dir="$here/fixtures"
+fixture="$fixture_dir/hello"
+
+# Cloudflare's managed rules drop datacenter traffic with no User-Agent, so
+# the staging-DB fetch has to name itself. This is the string it must send.
+expected_ua='shedos-ci (+https://shedos.org)'
 
 pass=0
 fail=0
@@ -65,19 +71,18 @@ dry_run_argv() {
     ) | sed -n 's/^argv: //p'
 }
 
-# python's http.server on a free port, so the 404 path is exercised over the
-# protocol the real staging DB is served with. -u because the banner we read
-# the port from would otherwise sit in a block buffer. Sets http_server_pid
-# and http_server_port; the banner is only printed once the socket listens.
+# The stand-in staging repo on a free port, so the 404 path is exercised over
+# the protocol the real one is served with. Sets http_server_pid and
+# http_server_port; the banner only prints once the socket listens.
 http_server_pid=""
 http_server_port=""
 start_http_server() {
-    local root=$1 log=$2
-    (cd "$root" && exec python3 -u -m http.server 0 --bind 127.0.0.1) > "$log" 2>&1 &
+    local capture=$1 log=$2
+    python3 "$fixture_dir/staging-db-server.py" "$capture" > "$log" 2>&1 &
     http_server_pid=$!
     http_server_port=""
     for _ in $(seq 1 50); do
-        http_server_port=$(sed -n 's/.*port \([0-9]\{1,\}\).*/\1/p' "$log" | head -1)
+        http_server_port=$(sed -n 's/^port \([0-9]\{1,\}\)$/\1/p' "$log" | head -1)
         [[ -n $http_server_port ]] && break
         sleep 0.1
     done
@@ -202,9 +207,8 @@ case_staging_db_404() {
     trap 'kill "$http_server_pid" 2>/dev/null; rm -rf "$work"' RETURN
 
     cp "$fixture/PKGBUILD" "$work/PKGBUILD"
-    mkdir -p "$work/srv"
 
-    start_http_server "$work/srv" "$work/httpd.log"
+    start_http_server "$work/ua.txt" "$work/httpd.log"
     if [[ -z $http_server_port ]]; then
         cat "$work/httpd.log"
         return 1
@@ -219,6 +223,8 @@ case_staging_db_404() {
         grep -qF 'staging DB absent — first publish' "$work/build.log"
     check 'the build ran anyway' \
         [ -f "$work/dist/shedos-ci-hello-1-1-any.pkg.tar.zst" ]
+    check 'the fetch names itself to the CDN' \
+        [ "$(head -1 "$work/ua.txt" 2>/dev/null)" = "$expected_ua" ]
 }
 
 # --- case: a staging DB we cannot read is not the same as one that is not
