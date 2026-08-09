@@ -1,0 +1,12 @@
+pkgname=shedos-ci-hello
+pkgver=1
+pkgrel=1
+pkgdesc="Fixture package the shedos-ci pipeline harness builds"
+arch=('any')
+url="https://shedos.org"
+license=('MIT')
+
+package() {
+    install -d "$pkgdir/usr/share/shedos-ci-hello"
+    printf 'hello from shedos-ci\n' > "$pkgdir/usr/share/shedos-ci-hello/hello.txt"
+}
