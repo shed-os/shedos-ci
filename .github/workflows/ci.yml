@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  harness:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    steps:
+      - name: Install test dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --needed --noconfirm base-devel git sudo jq curl python python-yaml
+          # archlinux:latest ships an empty keyring; populate it for makepkg.
+          pacman-key --init
+          pacman-key --populate archlinux
+          # The harness builds a real package, and makepkg refuses to run as root.
+          useradd -m tester
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Trust workspace for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Validate the workflow YAML
+        run: |
+          for f in .github/workflows/*.yml templates/caller.yml; do
+              python3 -c 'import yaml,sys; yaml.safe_load(open(sys.argv[1]))' "$f"
+              echo "$f parses"
+          done
+
+      - name: Run the pipeline harness
+        run: |
+          chown -R tester:tester .
+          sudo -u tester -H bash test/pipeline/run.sh
