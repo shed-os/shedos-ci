@@ -19,17 +19,46 @@ DIST=$PWD/dist
 # release can move out of the way instead of colliding at publish time.
 staging_entries=""
 
+# Only two answers are safe here: the DB says which releases are taken, or it
+# demonstrably does not exist yet. Anything else — a refused connection, a
+# timeout, a 500, a truncated download — would silently disarm the pkgrel
+# guard and publish over a release that is already out there, so it stops the
+# build instead.
 fetch_staging_db() {
-    local db
+    local db err code rc=0
     db=$(mktemp)
-    # -f without -S: a 404 or an unreachable repo is the first-publish case,
-    # not an error, so curl's own diagnostic would only be noise.
-    if curl -fsL "$STAGING_DB_URL" -o "$db" && [[ -s $db ]]; then
-        staging_entries=$(tar -tzf "$db" 2>/dev/null | sed -e 's:^\./::' -e 's:/.*::' | sort -u) \
-            || staging_entries=""
+    err=$(mktemp)
+
+    code=$(curl -sSL --max-time 60 -o "$db" -w '%{http_code}' "$STAGING_DB_URL" 2> "$err") || rc=$?
+
+    # 37 is curl's "could not read file", i.e. a file:// URL with nothing
+    # behind it. Over HTTP the same absence arrives as a 404.
+    if (( rc == 37 )) || [[ $code == 404 ]]; then
+        rm -f "$db" "$err"
+        echo "staging DB absent — first publish"
+        return 0
     fi
-    rm -f "$db"
-    [[ -n $staging_entries ]] || echo "staging DB absent — first publish"
+
+    if (( rc != 0 )); then
+        echo "cannot reach the staging DB at $STAGING_DB_URL: $(tr -d '\n' < "$err") (curl exit $rc)" >&2
+        rm -f "$db" "$err"
+        exit 1
+    fi
+
+    # file:// transfers report no status at all; HTTP has to be a success.
+    if [[ $code != 000 && $code != 2?? ]]; then
+        echo "staging DB at $STAGING_DB_URL returned HTTP $code" >&2
+        rm -f "$db" "$err"
+        exit 1
+    fi
+
+    if ! staging_entries=$(tar -tzf "$db" 2> "$err" | sed -e 's:^\./::' -e 's:/.*::' | sort -u); then
+        echo "staging DB at $STAGING_DB_URL is not readable as a database: $(tr -d '\n' < "$err")" >&2
+        rm -f "$db" "$err"
+        exit 1
+    fi
+
+    rm -f "$db" "$err"
 }
 
 # pkgname/pkgver/pkgrel straight from the PKGBUILD. Sourcing is what makepkg
@@ -73,16 +102,24 @@ guard_pkgrel() {
         -m "Release $pkgver-$pkgrel is already published to the staging repo."
 }
 
+# The invocation, NUL-separated, so both the runner and the dry run see the
+# same argv. PKGDEST pins the output next to the PKGBUILD whatever the host
+# makepkg.conf says, so the collection step below cannot miss it. CI builds
+# take the sudo branch; a workstation running the harness takes the other.
+makepkg_argv() {
+    local dir=$1
+    local -a cmd=()
+    [[ $BUILD_USER == "$(id -un)" ]] || cmd=(sudo -u "$BUILD_USER")
+    # shellcheck disable=SC2016  # $1 is the inner bash's argument, not ours
+    cmd+=(env "PKGDEST=$dir" bash -c 'cd "$1" && makepkg --syncdeps --noconfirm --force' _ "$dir")
+    printf '%s\0' "${cmd[@]}"
+}
+
 run_makepkg() {
     local dir=$1
-    # PKGDEST pins the output next to the PKGBUILD whatever the host
-    # makepkg.conf says, so the collection step below cannot miss it.
-    if [[ $BUILD_USER == "$(id -un)" ]]; then
-        (cd "$dir" && PKGDEST=$dir makepkg --syncdeps --noconfirm --force)
-    else
-        sudo -u "$BUILD_USER" env PKGDEST="$dir" \
-            bash -c 'cd "$1" && makepkg --syncdeps --noconfirm --force' _ "$dir"
-    fi
+    local -a cmd
+    mapfile -t -d '' cmd < <(makepkg_argv "$dir")
+    "${cmd[@]}"
 }
 
 mapfile -t dirs < <(jq -er '.[]' <<<"$PACKAGES_JSON")
@@ -91,8 +128,20 @@ if [[ ${#dirs[@]} -eq 0 ]]; then
     exit 1
 fi
 
-mkdir -p "$DIST"
+# Prints what each package would be built with and stops. The build itself
+# needs a container and a build user, so this is how the invocation gets
+# checked without one.
+if [[ -n ${SHEDOS_DRY_RUN:-} ]]; then
+    for dir in "${dirs[@]}"; do
+        dir=$(cd -- "$dir" && pwd)
+        mapfile -t -d '' cmd < <(makepkg_argv "$dir")
+        printf 'argv: %s\n' "${cmd[@]}"
+    done
+    exit 0
+fi
+
 fetch_staging_db
+mkdir -p "$DIST"
 
 for dir in "${dirs[@]}"; do
     dir=$(cd -- "$dir" && pwd)
