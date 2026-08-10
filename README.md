@@ -1,8 +1,8 @@
 # shedos-ci
 
 The CI every ShedOS package repository runs. One reusable workflow lives here,
-so a package repo carries a six-line caller instead of its own pipeline, and a
-change to how packages are built is a change to this repo alone.
+so a package repo carries a twelve-line caller instead of its own pipeline, and
+a change to how packages are built is a change to this repo alone.
 
 ## What the pipeline does
 
@@ -37,10 +37,11 @@ just cannot pass for coverage. Whatever the suites need beyond `base-devel`,
 `shed-os/shedos-release`. Nothing is signed or uploaded here; publishing
 happens only in shedos-release.
 
-All three jobs run on the same `archlinux:latest` image, including this one,
-which needs no container of its own. It is there so the tools the scripts call
-are the versions the harness tests against — the runner's host image carries
-different ones.
+All three jobs run in the same `archlinux:latest` container, publish-request
+included even though it only calls an API. It is there so the tools the scripts
+call are the versions the harness tests against: on the bare runner this job
+found a `jq` a major version behind, and a program that compiled everywhere
+else was a syntax error under it.
 
 ## Adopting it
 
@@ -94,6 +95,12 @@ refuses a connection on loopback to separate a first publish from a broken one,
 prints the makepkg invocation for both the sudo and the direct branch without
 running either, rolls up stand-in suites that pass, fail and skip, and checks
 the dispatch body against the contract above with a stubbed `gh`.
+
+The loopback server records the request header, so the harness asserts the
+staging-DB fetch names itself. Cloudflare's managed rules drop datacenter
+traffic with no User-Agent, and a GitHub runner is a datacenter address: a
+fetch that loses its UA answers 403 in CI while still working from a desk, and
+the assertion is what keeps that from being found in production.
 
 `.github/workflows/ci.yml` runs that harness and parses every workflow file on
 every push and pull request, so the pipeline the package repos consume is gated
