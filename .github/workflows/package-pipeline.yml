@@ -26,8 +26,7 @@ on:
         description: >-
           JSON array of suite names whose skip the caller accepts. Any other
           suite that bows out fails the job, so a suite cannot stop running
-          without someone deciding it could. An allowed skip is a named debt,
-          reviewed each phase — never a way to mute a suite.
+          without someone deciding it could.
         type: string
         default: '[]'
       test_env:
@@ -52,8 +51,7 @@ on:
         description: Token the publish request authenticates with against shedos-release.
         required: true
 
-# Per job, not per workflow: only the build writes, and one block for all three
-# would hand that write to the two jobs with no use for it.
+# Per job, not per workflow: only the build writes.
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -65,11 +63,11 @@ jobs:
     container:
       image: archlinux:latest
     steps:
-      # First, before any pacman call: shedos-system's install scriptlet points
+      # Before any pacman call: shedos-system's install scriptlet points
       # /etc/pacman.conf at the production repo when it lands as a build
-      # dependency, and the next `pacman -Sy` then resolves against packages we
-      # are in the middle of replacing. The marker tells the scriptlet to skip;
-      # the strip clears any fence an earlier layer left behind.
+      # dependency, and the next `pacman -Sy` resolves against the packages we
+      # are replacing. The marker tells the scriptlet to skip; the strip clears
+      # any fence an earlier layer left behind.
       - name: Mark the build environment
         run: |
           touch /.shedos-build-environment
@@ -112,9 +110,8 @@ jobs:
       - name: Build packages
         env:
           PACKAGES: ${{ inputs.packages }}
-          # The condition publish-request runs under, so a bump is pushed by
-          # the build whose packages go on to be published and by no other. A
-          # pull request builds a merge of the branch into main; pushing that
+          # Only the build whose packages get published pushes a bump: a pull
+          # request builds a merge of the branch into main, and pushing that
           # would merge the pull request.
           SHEDOS_PKGREL_PUSH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         run: bash .shedos-ci/scripts/build-package.sh "$PACKAGES"
@@ -142,10 +139,9 @@ jobs:
           pacman -S --needed --noconfirm base-devel git sudo jq "${extra[@]}"
           pacman-key --init
           pacman-key --populate archlinux
-          # The suites run as a normal user, the way they do on a workstation:
-          # makepkg refuses to run as root, and a suite that only ever runs as
-          # root stops proving anything about the machines it ships to. Sudo is
-          # there for the ones that genuinely need it.
+          # makepkg refuses to run as root, and a suite that only ever runs
+          # as root proves nothing about the machines it ships to. Sudo is
+          # there for the ones that need it.
           useradd -m -G wheel tester
           echo '%wheel ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/wheel
           chmod 440 /etc/sudoers.d/wheel
@@ -180,10 +176,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    # Same image as the other two jobs on purpose. On the bare host this job
-    # ran against the runner's jq, which is a major version behind the one the
-    # harness tests with, and a jq program that compiled everywhere else was a
-    # syntax error here.
+    # Same image as the other two jobs: on the bare runner this job ran
+    # against a jq a major version behind the one the suites test with, and a
+    # program that compiled everywhere else was a syntax error here.
     container:
       image: archlinux:latest
     steps:

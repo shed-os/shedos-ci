@@ -22,11 +22,9 @@ DIST=$PWD/dist
 # release can move out of the way instead of colliding at publish time.
 staging_entries=""
 
-# Only two answers are safe here: the DB says which releases are taken, or it
-# demonstrably does not exist yet. Anything else — a refused connection, a
-# timeout, a 500, a truncated download — would silently disarm the pkgrel
-# guard and publish over a release that is already out there, so it stops the
-# build instead.
+# Only two answers are safe: the DB says which releases are taken, or it
+# demonstrably does not exist yet. Anything else would disarm the pkgrel guard
+# and publish over a release that is already out there.
 fetch_staging_db() {
     local db err code rc=0
     db=$(mktemp)
@@ -68,8 +66,8 @@ fetch_staging_db() {
     rm -f "$db" "$err"
 }
 
-# pkgname/pkgver/pkgrel straight from the PKGBUILD. Sourcing is what makepkg
-# does too; the subshell keeps the variables out of this script.
+# Sourcing is what makepkg does too; the subshell keeps the variables out of
+# this script.
 pkgbuild_field() {
     local dir=$1 field=$2
     (
@@ -83,12 +81,11 @@ pkgbuild_field() {
     )
 }
 
-# Put the bump back where it came from: the artifact carries the new release,
-# and a checkout left on the old one describes a package nobody can get. A push
-# that does not land is that same divergence reached quietly, so it stops the
-# build. Only the build whose packages will be published pushes, and it is off
-# until told — a pull request builds a merge of the branch into main, and
-# pushing that would merge the pull request.
+# The artifact carries the new release, so a checkout left on the old one
+# describes a package nobody can get. A push that does not land is that same
+# divergence reached quietly, so it stops the build. Pushing is off until told:
+# a pull request builds a merge of the branch into main, and pushing that would
+# merge the pull request.
 #
 # The push goes out with the job's GITHUB_TOKEN and has to keep going out with
 # it. A push made with that token starts no workflow run, and a run started
@@ -98,8 +95,6 @@ pkgbuild_field() {
 # package repo that protects main cannot use this guard as it stands: bump
 # pkgrel by hand there, never hand the job a stronger token.
 
-# Anything that keeps the bump from reaching the remote ends the same way, so
-# it is worth saying in the same words.
 push_failed() {
     local err=$1 rc=$2
     echo "cannot push the pkgrel bump to $PUSH_REMOTE: $(tr '\n' ' ' < "$err") (git exit $rc)" >&2
@@ -115,11 +110,9 @@ push_bump() {
         return 0
     fi
 
-    # Whatever the workflow said, the bump goes out only if it sits on what
-    # main is right now. A pull request checkout is a merge of the branch into
-    # main, so the commit under the bump is that merge and not main's tip, and
-    # this refuses it there without the gate above having to be right. It
-    # catches a main that moved mid-build too.
+    # The bump goes out only if it sits on what main is right now: a merge
+    # checkout puts something main has never seen underneath it, and a main
+    # that moved mid-build is the same divergence.
     err=$(mktemp)
     remote_head=$(git -C "$dir" ls-remote "$PUSH_REMOTE" refs/heads/main 2> "$err" | cut -f1) \
         || push_failed "$err" $?
@@ -166,13 +159,11 @@ guard_pkgrel() {
 
 # The build options the monolith's CI uses. A package built here has to record
 # the same BUILDENV and OPTIONS in its .BUILDINFO as the monolith's build of
-# the same source, or the equivalence gate that compares the two reads every
-# rebuilt object as a difference: stock makepkg leaves `debug` on, which
-# appends -C debuginfo=2 to RUSTFLAGS, moves cargo's metadata hash and renames
-# every path under a crate's target directory. The drop-in goes beside the
-# config makepkg reads rather than into the workflow, so it holds for every
-# caller with nothing to opt into, and so the harness can point the whole thing
-# at a scratch config instead of writing into the machine's /etc.
+# the same source, or the equivalence check reads every rebuilt object as a
+# difference: stock makepkg leaves `debug` on, which appends -C debuginfo=2 to
+# RUSTFLAGS, moves cargo's metadata hash and renames every path under a crate's
+# target directory. The drop-in goes beside the config makepkg reads so it
+# holds for every caller and can be pointed at a scratch config.
 wire_makepkg_options() {
     install -d "$MAKEPKG_CONF.d"
     cat > "$MAKEPKG_CONF.d/99-shedos.conf" <<'EOF'
@@ -182,12 +173,10 @@ MAKEFLAGS="-j$(nproc)"
 EOF
 }
 
-# The invocation, NUL-separated, so both the runner and the dry run see the
-# same argv. PKGDEST pins the output next to the PKGBUILD whatever the host
-# makepkg.conf says, so the collection step below cannot miss it, and
-# MAKEPKG_CONF names the config the options above were just written beside —
-# sudo would drop it otherwise. CI builds take the sudo branch; a workstation
-# running the harness takes the other.
+# NUL-separated, so the dry run and the real one see the same argv. PKGDEST
+# pins the output next to the PKGBUILD whatever the host makepkg.conf says, and
+# MAKEPKG_CONF names the config the options above were written beside — sudo
+# would drop it otherwise.
 makepkg_argv() {
     local dir=$1
     local -a cmd=()
@@ -211,9 +200,8 @@ if [[ ${#dirs[@]} -eq 0 ]]; then
     exit 1
 fi
 
-# Prints what each package would be built with and stops. The build itself
-# needs a container and a build user, so this is how the invocation gets
-# checked without one.
+# Prints what each package would be built with and stops: the build itself
+# needs a container and a build user.
 if [[ -n ${SHEDOS_DRY_RUN:-} ]]; then
     for dir in "${dirs[@]}"; do
         dir=$(cd -- "$dir" && pwd)

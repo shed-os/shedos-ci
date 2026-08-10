@@ -5,11 +5,9 @@
 # sudo instead; every other suite runs as the invoking user.
 #
 # A suite that exits clean after printing a skip marker is reported SKIP, not
-# PASS. Suites bow out when an optional dependency is missing, and a rollup
-# that counts those as tested is how a package ships with its own suite never
-# having run. A skip passes the job only if the caller named the suite in
-# allowed_skips; anything else stops the run, because a suite nobody decided
-# could stop running has stopped running.
+# PASS: a rollup that counts a bowed-out suite as tested is how a package ships
+# with its own suite never having run. A skip passes the job only if the caller
+# named the suite in allowed_skips.
 set -uo pipefail
 
 # The convention every new suite writes: a line opening `SKIP: <reason>`. The
@@ -17,8 +15,7 @@ set -uo pipefail
 # capitals anywhere in a line, a line opening with `skip` or `skip:`, or
 # skipped/skipping. Bare lowercase `skip` only counts at the start of a line,
 # and a hyphen or underscore either side disqualifies the word — a check called
-# oversized-skipped is a check that ran, and a rollup that always says SKIP
-# says nothing.
+# oversized-skipped is a check that ran.
 announced_a_skip() {
     grep -qE '^[[:space:]]*SKIP: ' "$1" && return 0
     grep -qE '(^|[^[:alnum:]_-])SKIP([^[:alnum:]_-]|$)' "$1" ||
@@ -46,10 +43,9 @@ is_allowed() {
     return 1
 }
 
-# The caller's test_env, one KEY=VALUE per line. They are passed to each suite
-# rather than exported here, because sudo resets the environment on the way
-# into the root lane and a suite that silently lost its configuration is the
-# kind of pass this whole script exists to stop.
+# The caller's test_env, one KEY=VALUE per line. Passed to each suite rather
+# than exported here, because sudo resets the environment on the way into the
+# root lane.
 assignments=()
 while IFS= read -r line; do
     [[ -n ${line//[[:space:]]/} ]] || continue

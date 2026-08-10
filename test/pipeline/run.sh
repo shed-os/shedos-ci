@@ -166,8 +166,6 @@ case_build() {
 
 # --- case: a staging DB that already carries this pkgver-pkgrel bumps the
 # PKGBUILD, records the bump as a commit and puts that commit on the remote.
-# The artifact ships the new release, so a repository left on the old one no
-# longer describes anything that was published.
 case_pkgrel_guard() {
     local work head
     work=$(mktemp -d) || return 1
@@ -200,8 +198,7 @@ case_pkgrel_guard() {
 }
 
 # --- case: only a build whose packages can be published pushes its bump, and
-# saying nothing is saying no. A pull request builds a merge of the branch into
-# main, and pushing that would merge the pull request.
+# saying nothing is saying no.
 case_pkgrel_push_withheld() {
     local work head
     work=$(mktemp -d) || return 1
@@ -224,11 +221,10 @@ case_pkgrel_push_withheld() {
         grep -qF "SHEDOS_PKGREL_PUSH is not 'true'" "$work/build.log"
 }
 
-# --- case: the bump only goes out on top of what main is right now. This is
-# what makes the workflow's gate a convenience rather than the only thing
-# standing between a pull request and being merged by its own build: a merge
+# --- case: the bump only goes out on top of what main is right now. A merge
 # checkout puts something main has never seen under the bump, which is the
-# shape the fixture takes here.
+# shape the fixture takes here, so the workflow's gate is not the only thing
+# standing between a pull request and being merged by its own build.
 case_pkgrel_push_diverged() {
     local work head parent
     work=$(mktemp -d) || return 1
@@ -258,12 +254,10 @@ case_pkgrel_push_diverged() {
     check 'and makepkg never ran' [ ! -e "$work/src" ]
 }
 
-# --- case: a remote that takes the push and refuses it stops the build. This
-# is the path a protected main and a caller that forgot the write permission
-# both arrive on, and publishing an artifact whose release the repository never
-# recorded is the divergence the push exists to close, so it must never be the
-# quiet outcome of a rejected push. The remote here is real and up to date, so
-# nothing earlier in the push can be what stopped it.
+# --- case: a remote that takes the push and refuses it stops the build. A
+# protected main and a caller that forgot the write permission both arrive
+# here. The remote is real and up to date, so nothing earlier in the push can
+# be what stopped it.
 case_pkgrel_push_rejected() {
     local work head
     work=$(mktemp -d) || return 1
@@ -295,8 +289,7 @@ HOOK
 }
 
 # --- case: a remote that cannot be read at all stops the build the same way.
-# Reading it is the first thing the push does, so this is a different path to
-# the same outcome and neither of them may pass quietly.
+# Reading it is the first thing the push does, so this is a different path.
 case_pkgrel_remote_unreadable() {
     local work
     work=$(mktemp -d) || return 1
@@ -379,10 +372,9 @@ case_push_gate_matches_publish() {
 }
 
 # --- case: the pipeline builds with the options the monolith builds with. The
-# gate that compares a carved package against the monolith's own build of the
-# same source reads a stock `debug` build as a difference in every compiled
-# object, so what the package records is the contract — not what any config
-# file on the box says.
+# check that compares a carved package against the monolith's own build reads a
+# stock `debug` build as a difference in every compiled object, so what the
+# package records is the contract, not what any config file on the box says.
 case_build_options() {
     local work
     work=$(mktemp -d) || return 1
@@ -490,10 +482,9 @@ case_staging_db_unusable() {
         grep -qF 'not readable as a database' "$work/build.log"
 }
 
-# --- case: the dispatch body matches the contract the publisher consumes.
-# The expected side is a literal below, never built with the jq program under
-# test, and the comparison runs through python so a broken jq cannot make a
-# mismatch look like a match.
+# --- case: the dispatch body matches the contract the publisher consumes. The
+# expected side is a literal, and the comparison runs through python, so a
+# broken jq cannot make a mismatch look like a match.
 case_payload() {
     local work
     work=$(mktemp -d) || return 1
@@ -598,11 +589,9 @@ EOF
 }
 
 # A sudo that records how it was called and then runs the command as the
-# invoking user. The harness never has the real one: shedos-ci's own CI runs it
-# as a tester with no sudoers entry, and a workstation would prompt. The root
-# transition itself is proven live by the first needs-root suite; what the
-# harness proves is that the rollup reaches for sudo, for the suite that asked
-# and no other, with the argv the suite needs.
+# invoking user: CI runs the suite as a tester with no sudoers entry, and a
+# workstation would prompt. The transition into root is proven live by the
+# first needs-root suite; this only proves which suite gets sudo, and with what.
 stub_sudo() {
     local work=$1
     mkdir -p "$work/bin"
@@ -691,16 +680,14 @@ case_rollup_no_suites() {
 # --- case: a suite that bowed out is reported as skipped, never as passed. It
 # exits zero either way, so the marker in its output is the only thing that
 # keeps it from counting as coverage it did not deliver. The third suite is
-# named for the word and reports a check that is too — both real shapes, both
-# from suites that ran everything. A rollup that reads those as markers would
-# report SKIP forever and stop meaning anything.
+# named for the word and reports a check that is too, and neither is a marker.
 case_rollup_skip() {
     local work
     work=$(mktemp -d) || return 1
     trap 'rm -rf "$work"' RETURN
 
     make_suite "$work" widget 'echo "widget: SKIP (missing losetup)"'
-    make_suite "$work" x-gadget 'echo "skip T4_needs_zsh (zsh not installed)"'
+    make_suite "$work" x-gadget 'echo "skip zsh_completions (zsh not installed)"'
     make_suite "$work" skip-list 'printf "PASS oversized-skipped\nskip-list: 3 checks passed\n"'
     run_rollup "$work" '["widget", "x-gadget"]'
 
@@ -714,8 +701,7 @@ case_rollup_skip() {
 }
 
 # --- case: a suite that declares it needs root is handed to sudo and the
-# rollup says which lane it ran in. Everything else stays unprivileged, which
-# is the whole point of running the suites as a user in the first place.
+# rollup says which lane it ran in. Everything else stays unprivileged.
 case_rollup_root_lane() {
     local work
     work=$(mktemp -d) || return 1
