@@ -19,9 +19,18 @@ the package's `pkgver-pkgrel`. If that release is already published, it moves
 `chore(release): bump pkgrel for <pkgname>`. A missing staging database means
 first publish, and the build carries on.
 
-**test** — runs every `test/*/run.sh` in the package repo and fails if any of
-them fails. A repo with no suites prints `no test suites` and passes. Set
-`privileged_tests: true` if the suites need loop devices or mounts.
+**test** — `scripts/run-tests.sh` runs every `test/*/run.sh` in the package
+repo as the unprivileged `tester` user and fails if any of them fails. A repo
+with no suites prints `no test suites` and passes. Set `privileged_tests: true`
+if the suites need loop devices or mounts.
+
+Each suite gets an outcome line, and the run ends on
+`N passed, M skipped, K failed`. A suite that exits clean after printing a skip
+marker counts as `SKIP`, not as a pass: suites bow out when an optional
+dependency is missing, and a rollup that reads those as tested is how a package
+ships with its own suite never having run. A skip does not fail the job — it
+just cannot pass for coverage. Whatever the suites need beyond `base-devel`,
+`git`, `sudo` and `jq` goes in `test_packages`.
 
 **publish-request** — on a push to `main` only, downloads the artifact, reads
 `dist/SHA256SUMS`, and fires a `publish-request` repository dispatch at
@@ -51,6 +60,19 @@ default. Nothing in a reusable workflow can see the ref it was called at, so a
 caller pinning `package-pipeline.yml@v1` has to pass `ci_ref: v1` as well or it
 will run v1's workflow with main's scripts.
 
+`test_packages` is a space-separated list of extra pacman packages to install
+in the test job — `'python-pytest scdoc'` and so on. The job installs
+`base-devel git sudo jq` on its own and nothing else, so a suite reaching for
+anything beyond that skips itself, and the rollup reports it as `SKIP` rather
+than letting it pass for tested. The suites run as `tester`, an unprivileged
+user in `wheel` with passwordless sudo, mirroring how they run on a
+workstation; a suite that needs root has to ask for it.
+
+`needs_network_build: true` marks a package whose build reaches the network —
+a Rust or Node vendoring step, say. The container has network either way today,
+so the flag changes nothing yet; it records which packages would break if the
+build were sealed off, so tightening it later is not a hunt.
+
 ## The dispatch contract
 
 ```json
@@ -70,8 +92,8 @@ container, no root, nothing off this machine. It builds a fixture package,
 drives the pkgrel guard against a hand-made staging database, serves a 404 and
 refuses a connection on loopback to separate a first publish from a broken one,
 prints the makepkg invocation for both the sudo and the direct branch without
-running either, and checks the dispatch body against the contract above with a
-stubbed `gh`.
+running either, rolls up stand-in suites that pass, fail and skip, and checks
+the dispatch body against the contract above with a stubbed `gh`.
 
 `.github/workflows/ci.yml` runs that harness and parses every workflow file on
 every push and pull request, so the pipeline the package repos consume is gated

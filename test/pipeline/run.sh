@@ -389,6 +389,104 @@ STUB
     check 'and gh is never reached' [ ! -e "$work/argv" ]
 }
 
+# A package repo checkout holding one suite, whose run.sh is the given body.
+# Every suite touches a sentinel first, so a suite the rollup never reached
+# can be told apart from one that ran and said nothing.
+make_suite() {
+    local work=$1 name=$2 body=$3
+    mkdir -p "$work/test/$name"
+    cat > "$work/test/$name/run.sh" <<EOF
+#!/usr/bin/env bash
+: > "\$SENTINEL_DIR/$name"
+$body
+EOF
+}
+
+# The rollup over those suites, output in $rollup_out and status in $rollup_rc.
+rollup_out=""
+rollup_rc=0
+run_rollup() {
+    local work=$1
+    mkdir -p "$work/ran"
+    rollup_rc=0
+    rollup_out=$(
+        cd "$work" || exit 1
+        SENTINEL_DIR="$work/ran" bash "$repo_root/scripts/run-tests.sh" 2>&1
+    ) || rollup_rc=$?
+}
+
+# --- case: every suite passing is a clean rollup that says so once per suite.
+case_rollup_all_pass() {
+    local work
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' RETURN
+
+    make_suite "$work" a-first 'echo "a-first: 3 checks passed"'
+    make_suite "$work" b-second 'echo "b-second: 1 check passed"'
+    run_rollup "$work"
+
+    check 'a clean rollup exits zero' [ "$rollup_rc" -eq 0 ]
+    check 'the suite output is in the log' \
+        grep -qF 'a-first: 3 checks passed' <<<"$rollup_out"
+    check 'each suite gets an outcome line' \
+        bash -c "grep -qx 'PASS a-first' <<<\"\$1\" && grep -qx 'PASS b-second' <<<\"\$1\"" _ "$rollup_out"
+    check 'the tally counts both' \
+        grep -qF '2 passed, 0 skipped, 0 failed' <<<"$rollup_out"
+}
+
+# --- case: one failing suite fails the job without cutting the run short —
+# the suite after it still has to run, or a second defect rides out on the
+# fix for the first.
+case_rollup_failure() {
+    local work
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' RETURN
+
+    make_suite "$work" a-pass 'echo "a-pass: fine"'
+    make_suite "$work" b-fail 'echo "b-fail: broke"; exit 1'
+    make_suite "$work" c-pass 'echo "c-pass: fine"'
+    run_rollup "$work"
+
+    check 'a failing suite fails the job' [ "$rollup_rc" -ne 0 ]
+    check 'the suite after the failure still ran' [ -e "$work/ran/c-pass" ]
+    check 'the failure is the only one counted' \
+        grep -qF '2 passed, 0 skipped, 1 failed' <<<"$rollup_out"
+    check 'the failing suite is named' grep -qF 'failed: b-fail' <<<"$rollup_out"
+}
+
+# --- case: a repo with no suites is not a failure, and says why it passed.
+case_rollup_no_suites() {
+    local work
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' RETURN
+
+    run_rollup "$work"
+
+    check 'no suites is a pass' [ "$rollup_rc" -eq 0 ]
+    check 'and it is stated' grep -qx 'no test suites' <<<"$rollup_out"
+}
+
+# --- case: a suite that bowed out is reported as skipped, never as passed. It
+# exits zero either way, so the marker in its output is the only thing that
+# keeps it from counting as coverage it did not deliver.
+case_rollup_skip() {
+    local work
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' RETURN
+
+    make_suite "$work" widget 'echo "widget: SKIP (missing losetup)"'
+    make_suite "$work" x-gadget 'echo "gadget: skip T4_needs_zsh (zsh not installed)"'
+    run_rollup "$work"
+
+    check 'a skipped suite does not fail the job' [ "$rollup_rc" -eq 0 ]
+    check 'the skip is reported as one' grep -qx 'SKIP widget' <<<"$rollup_out"
+    check 'a lowercase marker counts too' grep -qx 'SKIP x-gadget' <<<"$rollup_out"
+    check 'nothing skipped is reported as passed' \
+        bash -c "! grep -q '^PASS ' <<<\"\$1\"" _ "$rollup_out"
+    check 'the tally separates skips from passes' \
+        grep -qF '0 passed, 2 skipped, 0 failed' <<<"$rollup_out"
+}
+
 # --- case: without the dispatch secret the publish must stop and say so.
 case_missing_secret() {
     local work
@@ -416,7 +514,9 @@ case_missing_secret() {
 for case in case_build case_pkgrel_guard case_decimal_pkgrel \
            case_pkgrel_literal_match case_makepkg_argv \
            case_staging_db_404 case_staging_db_unusable case_payload \
-           case_payload_build_failure case_missing_secret; do
+           case_payload_build_failure case_rollup_all_pass \
+           case_rollup_failure case_rollup_no_suites case_rollup_skip \
+           case_missing_secret; do
     printf '════════ %s ════════\n' "${case#case_}"
     if ! "$case"; then
         fail=$((fail + 1))

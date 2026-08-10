@@ -14,6 +14,14 @@ on:
           be tightened later without hunting for which packages need it.
         type: boolean
         default: false
+      test_packages:
+        description: >-
+          Extra pacman packages the caller's test suites need, space separated.
+          The job installs base-devel, git, sudo and jq on its own; anything
+          else a suite reaches for has to be named here or the suite skips
+          itself and the rollup says so.
+        type: string
+        default: ''
       privileged_tests:
         description: Run the test job in a privileged container (loop devices, mounts).
         type: boolean
@@ -101,45 +109,39 @@ jobs:
       options: ${{ inputs.privileged_tests && '--privileged' || '' }}
     steps:
       - name: Install test dependencies
+        env:
+          TEST_PACKAGES: ${{ inputs.test_packages }}
         run: |
           pacman -Syu --noconfirm
-          pacman -S --needed --noconfirm base-devel git sudo jq
+          read -r -a extra <<< "$TEST_PACKAGES"
+          pacman -S --needed --noconfirm base-devel git sudo jq "${extra[@]}"
           pacman-key --init
           pacman-key --populate archlinux
+          # The suites run as a normal user, the way they do on a workstation:
+          # makepkg refuses to run as root, and a suite that only ever runs as
+          # root stops proving anything about the machines it ships to. Sudo is
+          # there for the ones that genuinely need it.
+          useradd -m -G wheel tester
+          echo '%wheel ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/wheel
+          chmod 440 /etc/sudoers.d/wheel
 
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Check out the pipeline scripts
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: shed-os/shedos-ci
+          ref: ${{ inputs.ci_ref }}
+          path: .shedos-ci
 
       - name: Trust workspace for git
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
+      - name: Hand the tree to the test user
+        run: chown -R tester:tester .
+
       - name: Run test suites
-        run: |
-          set -uo pipefail
-          shopt -s nullglob
-          runners=(test/*/run.sh)
-          if (( ${#runners[@]} == 0 )); then
-              echo "no test suites"
-              exit 0
-          fi
-          pass=0
-          fail=0
-          failed=()
-          for runner in "${runners[@]}"; do
-              suite=$(basename "$(dirname "$runner")")
-              printf '════════ %s ════════\n' "$suite"
-              if bash "$runner"; then
-                  pass=$((pass + 1))
-              else
-                  fail=$((fail + 1))
-                  failed+=("$suite")
-              fi
-              echo
-          done
-          printf '════════ %d suites passed, %d failed ════════\n' "$pass" "$fail"
-          if (( fail > 0 )); then
-              printf 'failed: %s\n' "${failed[*]}" >&2
-              exit 1
-          fi
+        run: sudo -u tester -H bash .shedos-ci/scripts/run-tests.sh
 
   publish-request:
     needs: [build, test]
