@@ -11,12 +11,13 @@ set -uo pipefail
 
 # The forms suites announce a skip in: a line opening with `skip` or `skip:`,
 # the word SKIP in capitals anywhere in a line, or skipped/skipping. Bare
-# lowercase `skip` only counts at the start of a line — matched anywhere it
-# would fire on a suite whose own name carries the word, and a rollup that
-# always says SKIP says nothing.
+# lowercase `skip` only counts at the start of a line, and a hyphen or
+# underscore either side disqualifies the word — a check called
+# oversized-skipped is a check that ran, and a rollup that always says SKIP
+# says nothing.
 announced_a_skip() {
-    grep -qE '(^|[^[:alnum:]])SKIP([^[:alnum:]]|$)' "$1" ||
-        grep -qiE '^[[:space:]]*skip[[:space:]:]|(^|[^[:alnum:]])skipp(ed|ing)([^[:alnum:]]|$)' "$1"
+    grep -qE '(^|[^[:alnum:]_-])SKIP([^[:alnum:]_-]|$)' "$1" ||
+        grep -qiE '^[[:space:]]*skip[[:space:]:]|(^|[^[:alnum:]_-])skipp(ed|ing)([^[:alnum:]_-]|$)' "$1"
 }
 
 shopt -s nullglob

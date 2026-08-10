@@ -469,7 +469,8 @@ case_rollup_no_suites() {
 # --- case: a suite that bowed out is reported as skipped, never as passed. It
 # exits zero either way, so the marker in its output is the only thing that
 # keeps it from counting as coverage it did not deliver. The third suite is
-# named for the word: a rollup that reads a suite's own name as a marker would
+# named for the word and reports a check that is too — both real shapes, both
+# from suites that ran everything. A rollup that reads those as markers would
 # report SKIP forever and stop meaning anything.
 case_rollup_skip() {
     local work
@@ -478,7 +479,7 @@ case_rollup_skip() {
 
     make_suite "$work" widget 'echo "widget: SKIP (missing losetup)"'
     make_suite "$work" x-gadget 'echo "skip T4_needs_zsh (zsh not installed)"'
-    make_suite "$work" skip-list 'echo "skip-list: 3 checks passed"'
+    make_suite "$work" skip-list 'printf "PASS oversized-skipped\nskip-list: 3 checks passed\n"'
     run_rollup "$work"
 
     check 'a skipped suite does not fail the job' [ "$rollup_rc" -eq 0 ]
