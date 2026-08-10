@@ -84,13 +84,13 @@ pkgbuild_field() {
 # the move so the caller workflow has something to push.
 guard_pkgrel() {
     local dir=$1 pkgname=$2 pkgver=$3 pkgrel=$4
-    grep -qx "$pkgname-$pkgver-$pkgrel" <<<"$staging_entries" || return 0
+    grep -qxF "$pkgname-$pkgver-$pkgrel" <<<"$staging_entries" || return 0
 
     # A decimal pkgrel like 1.1 truncates to 1, which is behind where we
     # started, so step off it before looking for the first free release.
     local next=${pkgrel%%.*}
     [[ $pkgrel == "$next" ]] || next=$((next + 1))
-    while grep -qx "$pkgname-$pkgver-$next" <<<"$staging_entries"; do
+    while grep -qxF "$pkgname-$pkgver-$next" <<<"$staging_entries"; do
         next=$((next + 1))
     done
 

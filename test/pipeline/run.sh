@@ -184,6 +184,31 @@ case_decimal_pkgrel() {
         grep -qx 'pkgrel=2' "$work/PKGBUILD"
 }
 
+# --- case: the staging entry is matched literally. A pkgrel carrying a dot
+# read as a regex would match a release nobody published and bump off a free
+# one.
+case_pkgrel_literal_match() {
+    local work
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' RETURN
+
+    fixture_repo "$work"
+    sed -i 's/^pkgrel=.*/pkgrel=1.1/' "$work/PKGBUILD"
+
+    # Differs from shedos-ci-hello-1-1.1 in one character, where the dot is.
+    mkdir -p "$work/db/shedos-ci-hello-1-1X1"
+    : > "$work/db/shedos-ci-hello-1-1X1/desc"
+    tar -czf "$work/staging.db" -C "$work/db" shedos-ci-hello-1-1X1
+
+    if ! build_package "$work" "file://$work/staging.db"; then
+        cat "$work/build.log"
+        return 1
+    fi
+
+    check 'a near-miss staging entry does not bump' \
+        grep -qx 'pkgrel=1.1' "$work/PKGBUILD"
+}
+
 # --- case: the invocation CI actually uses runs through sudo, which this box
 # cannot execute, so assert the argv both branches construct instead.
 case_makepkg_argv() {
@@ -388,7 +413,8 @@ case_missing_secret() {
     check 'missing secret is named' grep -qF 'SHEDOS_DISPATCH_TOKEN' <<<"$out"
 }
 
-for case in case_build case_pkgrel_guard case_decimal_pkgrel case_makepkg_argv \
+for case in case_build case_pkgrel_guard case_decimal_pkgrel \
+           case_pkgrel_literal_match case_makepkg_argv \
            case_staging_db_404 case_staging_db_unusable case_payload \
            case_payload_build_failure case_missing_secret; do
     printf '════════ %s ════════\n' "${case#case_}"
