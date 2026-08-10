@@ -25,7 +25,18 @@ carries the new release, so a repo left on the old one describes a package
 nobody can get. Nothing is pushed from a pull request build:
 `pull_request` checks out a merge of the branch into `main`, and pushing that
 would merge the pull request. The bump still happens there, it just stays in
-the checkout.
+the checkout. The push is refused outright unless the bump sits on what the
+remote's `main` is at that moment, so a checkout that is not `main` — or a
+`main` that moved mid-build — stops the build instead of pushing.
+
+That push goes out with the job's `GITHUB_TOKEN`, and it has to keep going out
+with it. A push made with that token starts no workflow run, and that is the
+only thing standing between this guard and a loop with no end: a run started by
+the bump would find the release it had just published sitting in staging, bump
+again and push again. A personal access token or a GitHub App token does start
+that run. So a package repo that protects `main` cannot use the pipeline as it
+stands — the push is refused, the build goes red, and the answer is to lift the
+protection or move `pkgrel` by hand, never to hand the job a stronger token.
 
 **test** — `scripts/run-tests.sh` runs every `test/*/run.sh` in the package
 repo as the unprivileged `tester` user and fails if any of them fails. A suite
@@ -149,8 +160,11 @@ the dispatch body against the contract above with a stubbed `gh`.
 
 The fixture package repo has a bare repo as its `origin`, so the bump push is
 asserted against a real remote: one new commit on a bump, an untouched head
-when nothing bumped or the build is not the one publishing, and a build that
-stops before makepkg when the push cannot land.
+when nothing bumped or the build is not the one publishing, a refusal naming
+both commits when the bump does not sit on the remote's `main`, and a build
+that stops before makepkg when the push cannot land. The harness also reads the
+two copies of the publish condition out of `package-pipeline.yml` and fails if
+they have drifted, since nothing else here can see a workflow file.
 
 The root lane is asserted the same way the makepkg invocation is: `sudo` is a
 stub on `PATH` that records how it was called and then runs the command as the

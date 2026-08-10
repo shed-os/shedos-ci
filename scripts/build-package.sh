@@ -88,21 +88,48 @@ pkgbuild_field() {
 # build. Only the build whose packages will be published pushes, and it is off
 # until told — a pull request builds a merge of the branch into main, and
 # pushing that would merge the pull request.
+#
+# The push goes out with the job's GITHUB_TOKEN and has to keep going out with
+# it. A push made with that token starts no workflow run, and a run started
+# from here would find in staging the release it had just published, bump
+# again, push again, with nothing anywhere to stop it. A PAT or a GitHub App
+# token — the usual way past a protected main — does start that run, so a
+# package repo that protects main cannot use this guard as it stands: bump
+# pkgrel by hand there, never hand the job a stronger token.
+
+# Anything that keeps the bump from reaching the remote ends the same way, so
+# it is worth saying in the same words.
+push_failed() {
+    local err=$1 rc=$2
+    echo "cannot push the pkgrel bump to $PUSH_REMOTE: $(tr '\n' ' ' < "$err") (git exit $rc)" >&2
+    rm -f "$err"
+    exit 1
+}
+
 push_bump() {
-    local dir=$1 err rc=0
+    local dir=$1 err parent remote_head
 
     if [[ $PUSH_BUMP != true ]]; then
-        echo "these packages are not being published — the bump stays in this checkout"
+        echo "SHEDOS_PKGREL_PUSH is not 'true' — the bump stays in this checkout"
         return 0
     fi
 
+    # Whatever the workflow said, the bump goes out only if it sits on what
+    # main is right now. A pull request checkout is a merge of the branch into
+    # main, so the commit under the bump is that merge and not main's tip, and
+    # this refuses it there without the gate above having to be right. It
+    # catches a main that moved mid-build too.
     err=$(mktemp)
-    git -C "$dir" push "$PUSH_REMOTE" HEAD:main 2> "$err" || rc=$?
-    if (( rc != 0 )); then
-        echo "cannot push the pkgrel bump to $PUSH_REMOTE: $(tr '\n' ' ' < "$err") (git exit $rc)" >&2
+    remote_head=$(git -C "$dir" ls-remote "$PUSH_REMOTE" refs/heads/main 2> "$err" | cut -f1) \
+        || push_failed "$err" $?
+    parent=$(git -C "$dir" rev-parse HEAD~1)
+    if [[ $parent != "$remote_head" ]]; then
+        echo "refusing to push the pkgrel bump: it sits on $parent but $PUSH_REMOTE main is ${remote_head:-absent}" >&2
         rm -f "$err"
         exit 1
     fi
+
+    git -C "$dir" push "$PUSH_REMOTE" HEAD:main 2> "$err" || push_failed "$err" $?
 
     rm -f "$err"
     echo "pushed the bump to $PUSH_REMOTE"

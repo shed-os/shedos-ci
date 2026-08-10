@@ -86,8 +86,9 @@ staging_db() {
     tar -czf "$work/staging.db" -C "$work/db" "$@"
 }
 
-# Arguments past the DB URL are extra KEY=VALUE assignments, which is how a
-# case overrides the push knobs the build defaults to.
+# Arguments past the DB URL are extra KEY=VALUE assignments. The push knobs are
+# never set here, so a case that says nothing about them gets the defaults the
+# script ships with.
 build_package() {
     local work=$1 db_url=$2
     shift 2
@@ -95,7 +96,6 @@ build_package() {
         cd "$work" || exit 1
         env SHEDOS_STAGING_DB_URL="$db_url" \
             SHEDOS_BUILD_USER="$(id -un)" \
-            SHEDOS_PKGREL_PUSH=true \
             "$@" \
             bash "$repo_root/scripts/build-package.sh" '["."]'
     ) > "$work/build.log" 2>&1
@@ -172,7 +172,7 @@ case_pkgrel_guard() {
     staging_db "$work" shedos-ci-hello-1-1
     head=$(git -C "$fixture_remote" rev-parse main)
 
-    if ! build_package "$work" "file://$work/staging.db"; then
+    if ! build_package "$work" "file://$work/staging.db" SHEDOS_PKGREL_PUSH=true; then
         cat "$work/build.log"
         return 1
     fi
@@ -194,9 +194,9 @@ case_pkgrel_guard() {
         [ -f "$work/dist/shedos-ci-hello-1-2-any.pkg.tar.zst" ]
 }
 
-# --- case: only a build whose packages can be published pushes its bump. A
-# pull request builds a merge of the branch into main, and pushing that would
-# merge the pull request.
+# --- case: only a build whose packages can be published pushes its bump, and
+# saying nothing is saying no. A pull request builds a merge of the branch into
+# main, and pushing that would merge the pull request.
 case_pkgrel_push_withheld() {
     local work head
     work=$(mktemp -d) || return 1
@@ -206,7 +206,7 @@ case_pkgrel_push_withheld() {
     staging_db "$work" shedos-ci-hello-1-1
     head=$(git -C "$fixture_remote" rev-parse main)
 
-    if ! build_package "$work" "file://$work/staging.db" SHEDOS_PKGREL_PUSH=false; then
+    if ! build_package "$work" "file://$work/staging.db"; then
         cat "$work/build.log"
         return 1
     fi
@@ -215,8 +215,42 @@ case_pkgrel_push_withheld() {
         [ "$(git -C "$work" log -1 --format=%s)" = 'chore(release): bump pkgrel for shedos-ci-hello' ]
     check 'the remote is untouched' \
         [ "$(git -C "$fixture_remote" rev-parse main)" = "$head" ]
-    check 'and the build says the bump stayed behind' \
-        grep -qF 'the bump stays in this checkout' "$work/build.log"
+    check 'and the build names the knob that held it back' \
+        grep -qF "SHEDOS_PKGREL_PUSH is not 'true'" "$work/build.log"
+}
+
+# --- case: the bump only goes out on top of what main is right now. This is
+# what makes the workflow's gate a convenience rather than the only thing
+# standing between a pull request and being merged by its own build: a merge
+# checkout puts something main has never seen under the bump, which is the
+# shape the fixture takes here.
+case_pkgrel_push_diverged() {
+    local work head parent
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' RETURN
+
+    fixture_repo "$work"
+    staging_db "$work" shedos-ci-hello-1-1
+    head=$(git -C "$fixture_remote" rev-parse main)
+
+    printf '\n# a change the remote never saw\n' >> "$work/PKGBUILD"
+    git -C "$work" \
+        -c user.name=harness -c user.email=harness@shedos.invalid \
+        commit -qam 'a commit main does not have'
+    parent=$(git -C "$work" rev-parse HEAD)
+
+    if build_package "$work" "file://$work/staging.db" SHEDOS_PKGREL_PUSH=true; then
+        echo '   a bump on top of something main does not have was pushed anyway'
+        return 1
+    fi
+
+    check 'the refusal names what the bump sits on' \
+        grep -qF "it sits on $parent" "$work/build.log"
+    check 'and what the remote is on' \
+        grep -qF "main is $head" "$work/build.log"
+    check 'the remote is untouched' \
+        [ "$(git -C "$fixture_remote" rev-parse main)" = "$head" ]
+    check 'and makepkg never ran' [ ! -e "$work/src" ]
 }
 
 # --- case: a bump that cannot be pushed stops the build. Publishing an
@@ -230,7 +264,7 @@ case_pkgrel_push_failure() {
     fixture_repo "$work"
     staging_db "$work" shedos-ci-hello-1-1
 
-    if build_package "$work" "file://$work/staging.db" \
+    if build_package "$work" "file://$work/staging.db" SHEDOS_PKGREL_PUSH=true \
         "SHEDOS_PKGREL_PUSH_REMOTE=$work/nowhere.git"; then
         echo '   a bump that could not be pushed did not stop the build'
         return 1
@@ -288,6 +322,19 @@ case_pkgrel_literal_match() {
 
     check 'a near-miss staging entry does not bump' \
         grep -qx 'pkgrel=1.1' "$work/PKGBUILD"
+}
+
+# --- case: the build's push gate and the publish job's condition are one
+# sentence written twice. Let them drift and a build pushes bumps for packages
+# nobody publishes, or publishes packages whose bump stayed behind.
+case_push_gate_matches_publish() {
+    local workflow gate publish
+    workflow=$repo_root/.github/workflows/package-pipeline.yml
+    gate=$(sed -n 's/^ *SHEDOS_PKGREL_PUSH: \${{ \(.*\) }}$/\1/p' "$workflow")
+    publish=$(sed -n 's/^ *if: \(.*\)$/\1/p' "$workflow")
+
+    check 'the push gate is spelled out in the workflow' [ -n "$gate" ]
+    check 'and it is the publish condition word for word' [ "$gate" = "$publish" ]
 }
 
 # --- case: the invocation CI actually uses runs through sudo, which this box
@@ -701,7 +748,8 @@ case_missing_secret() {
 }
 
 for case in case_build case_pkgrel_guard case_pkgrel_push_withheld \
-           case_pkgrel_push_failure case_decimal_pkgrel \
+           case_pkgrel_push_diverged case_pkgrel_push_failure \
+           case_push_gate_matches_publish case_decimal_pkgrel \
            case_pkgrel_literal_match case_makepkg_argv \
            case_staging_db_404 case_staging_db_unusable case_payload \
            case_payload_build_failure case_rollup_all_pass \
