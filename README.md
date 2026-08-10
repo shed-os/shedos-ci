@@ -67,6 +67,34 @@ call are the versions the harness tests against: on the bare runner this job
 found a `jq` a major version behind, and a program that compiled everywhere
 else was a syntax error under it.
 
+## Build parity
+
+Before anything is built, `scripts/build-package.sh` writes a makepkg drop-in
+next to the config makepkg reads:
+
+```
+BUILDENV=(!distcc color !check !sign)
+OPTIONS=(strip docs !libtool !staticlibs emptydirs zipman purge !debug lto)
+MAKEFLAGS="-j$(nproc)"
+```
+
+These are the options the ShedOS monolith's CI builds with, and a package built
+here has to record the same `buildenv` and `options` in its `.BUILDINFO`,
+because a carved package is signed off by comparing it against the monolith's
+own build of the same source. Stock makepkg leaves `debug` on, which appends
+`-C debuginfo=2` to `RUSTFLAGS`; that moves cargo's metadata hash, renames every
+path under a crate's target directory, and the comparison then reports thousands
+of differences that have nothing to do with the carve. `!check` matches the
+monolith too, and `!sign` costs nothing here — the pipeline never signs, the
+publisher does.
+
+There is nothing to opt into and no way out: a package repo that chose its own
+build options would stop being comparable, which is the one thing the carve
+depends on. `MAKEPKG_CONF` names the config the drop-in is written beside,
+`/etc/makepkg.conf` unless something says otherwise — the harness points it at a
+scratch copy, which is how it asserts what a fixture package records without
+writing into the machine's `/etc`.
+
 ## Adopting it
 
 Copy `templates/caller.yml` into the package repo as

@@ -15,6 +15,7 @@ BUILD_USER=${SHEDOS_BUILD_USER:-builder}
 STAGING_DB_URL=${SHEDOS_STAGING_DB_URL:-https://repo.shedos.org/staging/test/x86_64/shedos.db}
 PUSH_REMOTE=${SHEDOS_PKGREL_PUSH_REMOTE:-origin}
 PUSH_BUMP=${SHEDOS_PKGREL_PUSH:-false}
+MAKEPKG_CONF=${MAKEPKG_CONF:-/etc/makepkg.conf}
 DIST=$PWD/dist
 
 # Names of every pkgver-pkgrel already published, so a rebuild of a taken
@@ -163,16 +164,37 @@ guard_pkgrel() {
     push_bump "$dir"
 }
 
+# The build options the monolith's CI uses. A package built here has to record
+# the same BUILDENV and OPTIONS in its .BUILDINFO as the monolith's build of
+# the same source, or the equivalence gate that compares the two reads every
+# rebuilt object as a difference: stock makepkg leaves `debug` on, which
+# appends -C debuginfo=2 to RUSTFLAGS, moves cargo's metadata hash and renames
+# every path under a crate's target directory. The drop-in goes beside the
+# config makepkg reads rather than into the workflow, so it holds for every
+# caller with nothing to opt into, and so the harness can point the whole thing
+# at a scratch config instead of writing into the machine's /etc.
+wire_makepkg_options() {
+    install -d "$MAKEPKG_CONF.d"
+    cat > "$MAKEPKG_CONF.d/99-shedos.conf" <<'EOF'
+BUILDENV=(!distcc color !check !sign)
+OPTIONS=(strip docs !libtool !staticlibs emptydirs zipman purge !debug lto)
+MAKEFLAGS="-j$(nproc)"
+EOF
+}
+
 # The invocation, NUL-separated, so both the runner and the dry run see the
 # same argv. PKGDEST pins the output next to the PKGBUILD whatever the host
-# makepkg.conf says, so the collection step below cannot miss it. CI builds
-# take the sudo branch; a workstation running the harness takes the other.
+# makepkg.conf says, so the collection step below cannot miss it, and
+# MAKEPKG_CONF names the config the options above were just written beside —
+# sudo would drop it otherwise. CI builds take the sudo branch; a workstation
+# running the harness takes the other.
 makepkg_argv() {
     local dir=$1
     local -a cmd=()
     [[ $BUILD_USER == "$(id -un)" ]] || cmd=(sudo -u "$BUILD_USER")
     # shellcheck disable=SC2016  # $1 is the inner bash's argument, not ours
-    cmd+=(env "PKGDEST=$dir" bash -c 'cd "$1" && makepkg --syncdeps --noconfirm --force' _ "$dir")
+    cmd+=(env "PKGDEST=$dir" "MAKEPKG_CONF=$MAKEPKG_CONF" \
+        bash -c 'cd "$1" && makepkg --syncdeps --noconfirm --force' _ "$dir")
     printf '%s\0' "${cmd[@]}"
 }
 
@@ -201,6 +223,7 @@ if [[ -n ${SHEDOS_DRY_RUN:-} ]]; then
     exit 0
 fi
 
+wire_makepkg_options
 fetch_staging_db
 mkdir -p "$DIST"
 

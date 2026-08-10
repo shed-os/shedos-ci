@@ -88,14 +88,19 @@ staging_db() {
 
 # Arguments past the DB URL are extra KEY=VALUE assignments. The push knobs are
 # never set here, so a case that says nothing about them gets the defaults the
-# script ships with.
+# script ships with. The build gets its own copy of this machine's makepkg
+# config: the pipeline installs its build options as a drop-in beside whatever
+# config makepkg reads, and the harness must not be the thing that writes into
+# /etc/makepkg.conf.d.
 build_package() {
     local work=$1 db_url=$2
     shift 2
+    cp /etc/makepkg.conf "$work/makepkg.conf"
     (
         cd "$work" || exit 1
         env SHEDOS_STAGING_DB_URL="$db_url" \
             SHEDOS_BUILD_USER="$(id -un)" \
+            MAKEPKG_CONF="$work/makepkg.conf" \
             "$@" \
             bash "$repo_root/scripts/build-package.sh" '["."]'
     ) > "$work/build.log" 2>&1
@@ -373,6 +378,31 @@ case_push_gate_matches_publish() {
     check 'and it is the publish condition word for word' [ "$gate" = "$publish" ]
 }
 
+# --- case: the pipeline builds with the options the monolith builds with. The
+# gate that compares a carved package against the monolith's own build of the
+# same source reads a stock `debug` build as a difference in every compiled
+# object, so what the package records is the contract — not what any config
+# file on the box says.
+case_build_options() {
+    local work
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' RETURN
+
+    cp "$fixture/PKGBUILD" "$work/PKGBUILD"
+    if ! build_package "$work" 'file:///nonexistent'; then
+        cat "$work/build.log"
+        return 1
+    fi
+
+    local info
+    info=$(bsdtar -xOf "$work/dist/shedos-ci-hello-1-1-any.pkg.tar.zst" .BUILDINFO)
+
+    check 'the package records the buildenv the monolith builds with' \
+        [ "$(sed -n 's/^buildenv = //p' <<<"$info" | tr '\n' ' ')" = '!distcc color !check !sign ' ]
+    check 'the package records the options the monolith builds with' \
+        [ "$(sed -n 's/^options = //p' <<<"$info" | tr '\n' ' ')" = 'strip docs !libtool !staticlibs emptydirs zipman purge !debug lto ' ]
+}
+
 # --- case: the invocation CI actually uses runs through sudo, which this box
 # cannot execute, so assert the argv both branches construct instead.
 case_makepkg_argv() {
@@ -392,14 +422,15 @@ case_makepkg_argv() {
 
     local -a got want
     mapfile -t got < <(dry_run_argv "$work" "$(id -un)")
-    want=(env "PKGDEST=$dir" bash -c "$script" _ "$dir")
-    check 'workstation argv is seven words' [ "${#got[@]}" -eq 7 ]
+    want=(env "PKGDEST=$dir" MAKEPKG_CONF=/etc/makepkg.conf bash -c "$script" _ "$dir")
+    check 'workstation argv is eight words' [ "${#got[@]}" -eq 8 ]
     check 'workstation argv matches' \
         [ "$(join_argv "${got[@]}")" = "$(join_argv "${want[@]}")" ]
 
     mapfile -t got < <(dry_run_argv "$work" builder)
-    want=(sudo -u builder env "PKGDEST=$dir" bash -c "$script" _ "$dir")
-    check 'sudo argv keeps PKGDEST as one word' [ "${#got[@]}" -eq 10 ]
+    want=(sudo -u builder env "PKGDEST=$dir" MAKEPKG_CONF=/etc/makepkg.conf \
+        bash -c "$script" _ "$dir")
+    check 'sudo argv keeps PKGDEST as one word' [ "${#got[@]}" -eq 11 ]
     check 'sudo argv matches' \
         [ "$(join_argv "${got[@]}")" = "$(join_argv "${want[@]}")" ]
 }
@@ -787,7 +818,7 @@ for case in case_build case_pkgrel_guard case_pkgrel_push_withheld \
            case_pkgrel_push_diverged case_pkgrel_push_rejected \
            case_pkgrel_remote_unreadable \
            case_push_gate_matches_publish case_decimal_pkgrel \
-           case_pkgrel_literal_match case_makepkg_argv \
+           case_pkgrel_literal_match case_makepkg_argv case_build_options \
            case_staging_db_404 case_staging_db_unusable case_payload \
            case_payload_build_failure case_rollup_all_pass \
            case_rollup_failure case_rollup_no_suites case_rollup_skip \
