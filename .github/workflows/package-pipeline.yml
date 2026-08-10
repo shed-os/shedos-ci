@@ -22,6 +22,20 @@ on:
           itself and the rollup says so.
         type: string
         default: ''
+      allowed_skips:
+        description: >-
+          JSON array of suite names whose skip the caller accepts. Any other
+          suite that bows out fails the job, so a suite cannot stop running
+          without someone deciding it could. An allowed skip is a named debt,
+          reviewed each phase — never a way to mute a suite.
+        type: string
+        default: '[]'
+      test_env:
+        description: >-
+          Newline-separated KEY=VALUE lines put into every suite's environment,
+          the root lane included.
+        type: string
+        default: ''
       privileged_tests:
         description: Run the test job in a privileged container (loop devices, mounts).
         type: boolean
@@ -141,7 +155,13 @@ jobs:
         run: chown -R tester:tester .
 
       - name: Run test suites
-        run: sudo -u tester -H bash .shedos-ci/scripts/run-tests.sh
+        env:
+          ALLOWED_SKIPS: ${{ inputs.allowed_skips }}
+          TEST_ENV: ${{ inputs.test_env }}
+        run: >-
+          sudo -u tester -H
+          env "ALLOWED_SKIPS=$ALLOWED_SKIPS" "TEST_ENV=$TEST_ENV"
+          bash .shedos-ci/scripts/run-tests.sh
 
   publish-request:
     needs: [build, test]

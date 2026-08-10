@@ -20,18 +20,22 @@ the package's `pkgver-pkgrel`. If that release is already published, it moves
 first publish, and the build carries on.
 
 **test** — `scripts/run-tests.sh` runs every `test/*/run.sh` in the package
-repo as the unprivileged `tester` user and fails if any of them fails. A repo
-with no suites prints `no test suites` and passes. Set `privileged_tests: true`
-if the suites need loop devices or mounts, and have the suite `sudo` for them —
-a privileged container does not make an unprivileged user root.
+repo as the unprivileged `tester` user and fails if any of them fails. A suite
+directory holding a `needs-root` file is handed to `sudo` instead. A repo with
+no suites prints `no test suites` and passes. Set `privileged_tests: true` if
+the suites need loop devices or mounts — a privileged container does not make
+an unprivileged user root, so the suite still needs the `needs-root` marker.
 
-Each suite gets an outcome line, and the run ends on
-`N passed, M skipped, K failed`. A suite that exits clean after printing a skip
-marker counts as `SKIP`, not as a pass: suites bow out when an optional
-dependency is missing, and a rollup that reads those as tested is how a package
-ships with its own suite never having run. A skip does not fail the job — it
-just cannot pass for coverage. Whatever the suites need beyond `base-devel`,
-`git`, `sudo` and `jq` goes in `test_packages`.
+Each suite gets an outcome line, the root lane marked `(root)`, and the run
+ends on `N passed, M skipped(allowed), K failed`. A suite that exits clean
+after printing a skip marker counts as `SKIP`, not as a pass: suites bow out
+when an optional dependency is missing, and a rollup that reads those as tested
+is how a package ships with its own suite never having run. A skip passes the
+job only if the caller named that suite in `allowed_skips`; any other skip
+fails it, so no suite stops running without someone deciding it could. Whatever
+the suites need beyond `base-devel`, `git`, `sudo` and `jq` goes in
+`test_packages`, and whatever they read out of the environment goes in
+`test_env`.
 
 **publish-request** — on a push to `main` only, downloads the artifact, reads
 `dist/SHA256SUMS`, and fires a `publish-request` repository dispatch at
@@ -70,6 +74,34 @@ than letting it pass for tested. The suites run as `tester`, an unprivileged
 user in `wheel` with passwordless sudo, mirroring how they run on a
 workstation; a suite that needs root has to ask for it.
 
+A suite asks by leaving a file called `needs-root` next to its `run.sh`. That
+suite alone runs as `sudo bash run.sh`, and its outcome line says `(root)` so
+the log shows which lane each suite ran in. Nothing else changes lane, because
+a suite that only ever runs as root stops proving anything about the machines
+it ships to.
+
+A new suite that has to bow out prints `SKIP: <reason>` on a line of its own.
+The rollup also still reads the older phrasings the suites carved out of the
+monolith use, but `SKIP:` is the convention to write.
+
+`allowed_skips` is a JSON array of the suite names whose skip the repo accepts
+— `'["rotation-drill"]'`. Those count in the tally as `skipped(allowed)`; a
+skip from any other suite is a failure and its line reads
+`SKIP (not allowed)`. An allowed skip is a named debt, reviewed each phase —
+never a way to mute a suite.
+
+`test_env` is newline-separated `KEY=VALUE` lines, put into every suite's
+environment:
+
+```yaml
+      test_env: |
+        SHEDOS_FIXTURE_ROOT=/tmp/fixtures
+```
+
+They are passed to each suite rather than exported around it, so the root lane
+keeps them: `sudo` resets the environment, and a suite that quietly lost its
+configuration is exactly the kind of pass the rollup exists to stop.
+
 `needs_network_build: true` marks a package whose build reaches the network —
 a Rust or Node vendoring step, say. The container has network either way today,
 so the flag changes nothing yet; it records which packages would break if the
@@ -96,6 +128,13 @@ refuses a connection on loopback to separate a first publish from a broken one,
 prints the makepkg invocation for both the sudo and the direct branch without
 running either, rolls up stand-in suites that pass, fail and skip, and checks
 the dispatch body against the contract above with a stubbed `gh`.
+
+The root lane is asserted the same way the makepkg invocation is: `sudo` is a
+stub on `PATH` that records how it was called and then runs the command as the
+invoking user, so the harness proves the rollup reaches for sudo for the suite
+that asked and no other, with the `test_env` assignments carried across. The
+transition into root itself is proven live by the first `needs-root` suite,
+which is the keyring repo's rotation drill.
 
 The loopback server records the request header, so the harness asserts the
 staging-DB fetch names itself. Cloudflare's managed rules drop datacenter

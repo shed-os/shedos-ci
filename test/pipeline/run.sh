@@ -402,16 +402,43 @@ $body
 EOF
 }
 
+# A sudo that records how it was called and then runs the command as the
+# invoking user. The harness never has the real one: shedos-ci's own CI runs it
+# as a tester with no sudoers entry, and a workstation would prompt. The root
+# transition itself is proven live by the first needs-root suite; what the
+# harness proves is that the rollup reaches for sudo, for the suite that asked
+# and no other, with the argv the suite needs.
+stub_sudo() {
+    local work=$1
+    mkdir -p "$work/bin"
+    cat > "$work/bin/sudo" <<'STUB'
+#!/usr/bin/env bash
+IFS=$'\x1f'
+printf '%s\n' "$*" >> "$SUDO_STUB_ARGV"
+unset IFS
+exec "$@"
+STUB
+    chmod +x "$work/bin/sudo"
+}
+
 # The rollup over those suites, output in $rollup_out and status in $rollup_rc.
+# $2 is the allowed_skips JSON, $3 the test_env block. A bin/ directory in the
+# work dir goes on PATH first, which is how the sudo stub gets in front of a
+# real one.
 rollup_out=""
 rollup_rc=0
 run_rollup() {
-    local work=$1
+    local work=$1 allowed=${2:-'[]'} test_env=${3:-}
     mkdir -p "$work/ran"
     rollup_rc=0
     rollup_out=$(
         cd "$work" || exit 1
-        SENTINEL_DIR="$work/ran" bash "$repo_root/scripts/run-tests.sh" 2>&1
+        [[ -d $work/bin ]] && export PATH="$work/bin:$PATH"
+        SENTINEL_DIR="$work/ran" \
+        SUDO_STUB_ARGV="$work/sudo-argv" \
+        ALLOWED_SKIPS="$allowed" \
+        TEST_ENV="$test_env" \
+            bash "$repo_root/scripts/run-tests.sh" 2>&1
     ) || rollup_rc=$?
 }
 
@@ -431,7 +458,7 @@ case_rollup_all_pass() {
     check 'each suite gets an outcome line' \
         bash -c "grep -qx 'PASS a-first' <<<\"\$1\" && grep -qx 'PASS b-second' <<<\"\$1\"" _ "$rollup_out"
     check 'the tally counts both' \
-        grep -qF '2 passed, 0 skipped, 0 failed' <<<"$rollup_out"
+        grep -qF '2 passed, 0 skipped(allowed), 0 failed' <<<"$rollup_out"
 }
 
 # --- case: one failing suite fails the job without cutting the run short —
@@ -450,7 +477,7 @@ case_rollup_failure() {
     check 'a failing suite fails the job' [ "$rollup_rc" -ne 0 ]
     check 'the suite after the failure still ran' [ -e "$work/ran/c-pass" ]
     check 'the failure is the only one counted' \
-        grep -qF '2 passed, 0 skipped, 1 failed' <<<"$rollup_out"
+        grep -qF '2 passed, 0 skipped(allowed), 1 failed' <<<"$rollup_out"
     check 'the failing suite is named' grep -qF 'failed: b-fail' <<<"$rollup_out"
 }
 
@@ -480,7 +507,7 @@ case_rollup_skip() {
     make_suite "$work" widget 'echo "widget: SKIP (missing losetup)"'
     make_suite "$work" x-gadget 'echo "skip T4_needs_zsh (zsh not installed)"'
     make_suite "$work" skip-list 'printf "PASS oversized-skipped\nskip-list: 3 checks passed\n"'
-    run_rollup "$work"
+    run_rollup "$work" '["widget", "x-gadget"]'
 
     check 'a skipped suite does not fail the job' [ "$rollup_rc" -eq 0 ]
     check 'a capitalised marker is caught' grep -qx 'SKIP widget' <<<"$rollup_out"
@@ -488,7 +515,84 @@ case_rollup_skip() {
     check 'a suite named for the word still passes' \
         grep -qx 'PASS skip-list' <<<"$rollup_out"
     check 'the tally separates skips from passes' \
-        grep -qF '1 passed, 2 skipped, 0 failed' <<<"$rollup_out"
+        grep -qF '1 passed, 2 skipped(allowed), 0 failed' <<<"$rollup_out"
+}
+
+# --- case: a suite that declares it needs root is handed to sudo and the
+# rollup says which lane it ran in. Everything else stays unprivileged, which
+# is the whole point of running the suites as a user in the first place.
+case_rollup_root_lane() {
+    local work
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' RETURN
+
+    make_suite "$work" a-plain "id -u > '$work/a-plain.uid'"
+    make_suite "$work" z-root "id -u > '$work/z-root.uid'"
+    : > "$work/test/z-root/needs-root"
+    stub_sudo "$work"
+    run_rollup "$work"
+
+    check 'the declared suite goes through sudo' \
+        [ "$(cat "$work/sudo-argv" 2>/dev/null)" = "$(join_argv bash test/z-root/run.sh)" ]
+    check 'the rollup names the lane' grep -qx 'PASS z-root (root)' <<<"$rollup_out"
+    check 'a plain suite is not annotated' grep -qx 'PASS a-plain' <<<"$rollup_out"
+    check 'and stays the invoking user' \
+        [ "$(cat "$work/a-plain.uid" 2>/dev/null)" = "$(id -u)" ]
+}
+
+# --- case: a skip the caller declared is a known debt. It counts as its own
+# thing in the tally and does not fail the job.
+case_rollup_allowed_skip() {
+    local work
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' RETURN
+
+    make_suite "$work" widget 'echo "SKIP: fixture reason"'
+    run_rollup "$work" '["widget"]'
+
+    check 'an allowed skip does not fail the job' [ "$rollup_rc" -eq 0 ]
+    check 'the declared marker is read as a skip' grep -qx 'SKIP widget' <<<"$rollup_out"
+    check 'the tally separates allowed skips' \
+        grep -qF '0 passed, 1 skipped(allowed), 0 failed' <<<"$rollup_out"
+}
+
+# --- case: a skip nobody declared is a suite that stopped running without
+# anyone deciding it could. That fails the job.
+case_rollup_disallowed_skip() {
+    local work
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' RETURN
+
+    make_suite "$work" widget 'echo "SKIP: fixture reason"'
+    run_rollup "$work"
+
+    check 'an undeclared skip fails the job' [ "$rollup_rc" -ne 0 ]
+    check 'the line says it was not allowed' \
+        grep -qx 'SKIP (not allowed) widget' <<<"$rollup_out"
+    check 'and it counts as a failure' \
+        grep -qF '0 passed, 0 skipped(allowed), 1 failed' <<<"$rollup_out"
+}
+
+# --- case: what the caller puts in test_env reaches the suites. The root lane
+# is the one that can lose it — sudo resets the environment — so assert the
+# assignment is handed to sudo rather than left to be inherited.
+case_rollup_test_env() {
+    local work
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' RETURN
+
+    make_suite "$work" a-plain "echo probe=\$PROBE_VAR"
+    make_suite "$work" z-root "echo probe=\$PROBE_VAR"
+    : > "$work/test/z-root/needs-root"
+    stub_sudo "$work"
+    run_rollup "$work" '[]' 'PROBE_VAR=42'
+
+    check 'the environment reaches a suite' grep -qF 'probe=42' <<<"$rollup_out"
+    check 'and survives the crossing into root' \
+        [ "$(cat "$work/sudo-argv" 2>/dev/null)" = "$(join_argv env PROBE_VAR=42 bash test/z-root/run.sh)" ]
+
+    run_rollup "$work" '[]' 'PROBE_VAR'
+    check 'a line that is not an assignment stops the run' [ "$rollup_rc" -ne 0 ]
 }
 
 # --- case: without the dispatch secret the publish must stop and say so.
@@ -520,6 +624,8 @@ for case in case_build case_pkgrel_guard case_decimal_pkgrel \
            case_staging_db_404 case_staging_db_unusable case_payload \
            case_payload_build_failure case_rollup_all_pass \
            case_rollup_failure case_rollup_no_suites case_rollup_skip \
+           case_rollup_root_lane case_rollup_allowed_skip \
+           case_rollup_disallowed_skip case_rollup_test_env \
            case_missing_secret; do
     printf '════════ %s ════════\n' "${case#case_}"
     if ! "$case"; then

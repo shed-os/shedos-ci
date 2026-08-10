@@ -8,5 +8,8 @@ jobs:
     uses: shed-os/shedos-ci/.github/workflows/package-pipeline.yml@main
     with:
       packages: '["."]'
+      # Also available, all optional: test_packages for pacman packages the
+      # suites need, allowed_skips for the suites whose skip the repo accepts,
+      # test_env for KEY=VALUE lines the suites read. See the shedos-ci README.
     secrets:
       SHEDOS_DISPATCH_TOKEN: ${{ secrets.SHEDOS_DISPATCH_TOKEN }}
