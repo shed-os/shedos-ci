@@ -100,7 +100,11 @@ environment:
 
 They are passed to each suite rather than exported around it, so the root lane
 keeps them: `sudo` resets the environment, and a suite that quietly lost its
-configuration is exactly the kind of pass the rollup exists to stop.
+configuration is exactly the kind of pass the rollup exists to stop. A
+multi-line block like that one crosses the input, the step environment and
+`sudo` before a suite ever sees it, and that crossing is proven by rehearsing
+the test job's own step bodies in an `archlinux` container; it goes live with
+the first caller to set `test_env`, which is shedos-nvim.
 
 `needs_network_build: true` marks a package whose build reaches the network —
 a Rust or Node vendoring step, say. The container has network either way today,
