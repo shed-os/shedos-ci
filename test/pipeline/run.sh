@@ -253,10 +253,46 @@ case_pkgrel_push_diverged() {
     check 'and makepkg never ran' [ ! -e "$work/src" ]
 }
 
-# --- case: a bump that cannot be pushed stops the build. Publishing an
-# artifact whose release the repository never recorded is the divergence this
-# push exists to close, so it must never be the quiet outcome of a failed push.
-case_pkgrel_push_failure() {
+# --- case: a remote that takes the push and refuses it stops the build. This
+# is the path a protected main and a caller that forgot the write permission
+# both arrive on, and publishing an artifact whose release the repository never
+# recorded is the divergence the push exists to close, so it must never be the
+# quiet outcome of a rejected push. The remote here is real and up to date, so
+# nothing earlier in the push can be what stopped it.
+case_pkgrel_push_rejected() {
+    local work head
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' RETURN
+
+    fixture_repo "$work"
+    staging_db "$work" shedos-ci-hello-1-1
+    head=$(git -C "$fixture_remote" rev-parse main)
+
+    cat > "$fixture_remote/hooks/pre-receive" <<'HOOK'
+#!/usr/bin/env bash
+echo 'refusing this push' >&2
+exit 1
+HOOK
+    chmod +x "$fixture_remote/hooks/pre-receive"
+
+    if build_package "$work" "file://$work/staging.db" SHEDOS_PKGREL_PUSH=true; then
+        echo '   a bump the remote refused did not stop the build'
+        return 1
+    fi
+
+    check 'the failure names the remote it was pushing to' \
+        grep -qF 'cannot push the pkgrel bump to origin' "$work/build.log"
+    check "and carries the remote's refusal" \
+        grep -qF 'remote: refusing this push' "$work/build.log"
+    check 'the remote is untouched' \
+        [ "$(git -C "$fixture_remote" rev-parse main)" = "$head" ]
+    check 'and makepkg never ran' [ ! -e "$work/src" ]
+}
+
+# --- case: a remote that cannot be read at all stops the build the same way.
+# Reading it is the first thing the push does, so this is a different path to
+# the same outcome and neither of them may pass quietly.
+case_pkgrel_remote_unreadable() {
     local work
     work=$(mktemp -d) || return 1
     trap 'rm -rf "$work"' RETURN
@@ -266,7 +302,7 @@ case_pkgrel_push_failure() {
 
     if build_package "$work" "file://$work/staging.db" SHEDOS_PKGREL_PUSH=true \
         "SHEDOS_PKGREL_PUSH_REMOTE=$work/nowhere.git"; then
-        echo '   a bump that could not be pushed did not stop the build'
+        echo '   a bump with nowhere to go did not stop the build'
         return 1
     fi
 
@@ -748,7 +784,8 @@ case_missing_secret() {
 }
 
 for case in case_build case_pkgrel_guard case_pkgrel_push_withheld \
-           case_pkgrel_push_diverged case_pkgrel_push_failure \
+           case_pkgrel_push_diverged case_pkgrel_push_rejected \
+           case_pkgrel_remote_unreadable \
            case_push_gate_matches_publish case_decimal_pkgrel \
            case_pkgrel_literal_match case_makepkg_argv \
            case_staging_db_404 case_staging_db_unusable case_payload \
