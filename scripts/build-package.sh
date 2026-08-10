@@ -13,6 +13,8 @@ fi
 PACKAGES_JSON=$1
 BUILD_USER=${SHEDOS_BUILD_USER:-builder}
 STAGING_DB_URL=${SHEDOS_STAGING_DB_URL:-https://repo.shedos.org/staging/test/x86_64/shedos.db}
+PUSH_REMOTE=${SHEDOS_PKGREL_PUSH_REMOTE:-origin}
+PUSH_BUMP=${SHEDOS_PKGREL_PUSH:-false}
 DIST=$PWD/dist
 
 # Names of every pkgver-pkgrel already published, so a rebuild of a taken
@@ -80,8 +82,34 @@ pkgbuild_field() {
     )
 }
 
-# Move pkgrel past every release the staging DB already carries, and record
-# the move so the caller workflow has something to push.
+# Put the bump back where it came from: the artifact carries the new release,
+# and a checkout left on the old one describes a package nobody can get. A push
+# that does not land is that same divergence reached quietly, so it stops the
+# build. Only the build whose packages will be published pushes, and it is off
+# until told — a pull request builds a merge of the branch into main, and
+# pushing that would merge the pull request.
+push_bump() {
+    local dir=$1 err rc=0
+
+    if [[ $PUSH_BUMP != true ]]; then
+        echo "these packages are not being published — the bump stays in this checkout"
+        return 0
+    fi
+
+    err=$(mktemp)
+    git -C "$dir" push "$PUSH_REMOTE" HEAD:main 2> "$err" || rc=$?
+    if (( rc != 0 )); then
+        echo "cannot push the pkgrel bump to $PUSH_REMOTE: $(tr '\n' ' ' < "$err") (git exit $rc)" >&2
+        rm -f "$err"
+        exit 1
+    fi
+
+    rm -f "$err"
+    echo "pushed the bump to $PUSH_REMOTE"
+}
+
+# Move pkgrel past every release the staging DB already carries, and put the
+# move back on the branch it was built from.
 guard_pkgrel() {
     local dir=$1 pkgname=$2 pkgver=$3 pkgrel=$4
     grep -qxF "$pkgname-$pkgver-$pkgrel" <<<"$staging_entries" || return 0
@@ -104,6 +132,8 @@ guard_pkgrel() {
         commit -q \
         -m "chore(release): bump pkgrel for $pkgname" \
         -m "Release $pkgver-$pkgrel is already published to the staging repo."
+
+    push_bump "$dir"
 }
 
 # The invocation, NUL-separated, so both the runner and the dry run see the

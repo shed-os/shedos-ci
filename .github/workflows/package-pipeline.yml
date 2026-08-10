@@ -52,12 +52,16 @@ on:
         description: Token the publish request authenticates with against shedos-release.
         required: true
 
-permissions:
-  contents: read
-
+# Per job, not per workflow: only the build writes, and one block for all three
+# would hand that write to the two jobs with no use for it.
 jobs:
   build:
     runs-on: ubuntu-latest
+    # The pkgrel guard commits its bump and pushes it back to the caller, which
+    # needs write access to the caller's contents. A reusable workflow can only
+    # narrow what it was called with, so the caller has to grant it too.
+    permissions:
+      contents: write
     container:
       image: archlinux:latest
     steps:
@@ -108,6 +112,11 @@ jobs:
       - name: Build packages
         env:
           PACKAGES: ${{ inputs.packages }}
+          # The condition publish-request runs under, so a bump is pushed by
+          # the build whose packages go on to be published and by no other. A
+          # pull request builds a merge of the branch into main; pushing that
+          # would merge the pull request.
+          SHEDOS_PKGREL_PUSH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         run: bash .shedos-ci/scripts/build-package.sh "$PACKAGES"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -118,6 +127,8 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     container:
       image: archlinux:latest
       options: ${{ inputs.privileged_tests && '--privileged' || '' }}
@@ -167,6 +178,8 @@ jobs:
     needs: [build, test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     # Same image as the other two jobs on purpose. On the bare host this job
     # ran against the runner's jq, which is a major version behind the one the
     # harness tests with, and a jq program that compiled everywhere else was a

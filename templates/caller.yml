@@ -3,6 +3,10 @@ on:
   push:
     branches: [main]
   pull_request:
+# The build pushes the pkgrel bump back here when a release is already
+# published, and a reusable workflow cannot grant itself the write.
+permissions:
+  contents: write
 jobs:
   pipeline:
     uses: shed-os/shedos-ci/.github/workflows/package-pipeline.yml@main

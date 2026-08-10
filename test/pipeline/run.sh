@@ -55,23 +55,48 @@ if a != b:
     sys.exit(1)' "$1" "$2"
 }
 
+# The fixture as a package repository with somewhere to push: a bare repo the
+# checkout carries as origin, which is the remote the bump goes to. Its path is
+# left in fixture_remote.
+fixture_remote=""
 fixture_repo() {
     local work=$1
+    fixture_remote="$work/origin.git"
+    git init -q --bare -b main "$fixture_remote"
     cp "$fixture/PKGBUILD" "$work/PKGBUILD"
     git -C "$work" init -q -b main
+    git -C "$work" remote add origin "$fixture_remote"
     git -C "$work" add PKGBUILD
     git -C "$work" \
         -c user.name=harness -c user.email=harness@shedos.invalid \
         commit -qm 'add the fixture'
+    git -C "$work" push -q origin main
 }
 
+# A staging database naming exactly the releases given, written to
+# $work/staging.db. Only the entry names matter to the guard, so each one is an
+# empty desc under a directory named for the release.
+staging_db() {
+    local work=$1 entry
+    shift
+    for entry in "$@"; do
+        mkdir -p "$work/db/$entry"
+        : > "$work/db/$entry/desc"
+    done
+    tar -czf "$work/staging.db" -C "$work/db" "$@"
+}
+
+# Arguments past the DB URL are extra KEY=VALUE assignments, which is how a
+# case overrides the push knobs the build defaults to.
 build_package() {
-    local work=$1
-    local db_url=$2
+    local work=$1 db_url=$2
+    shift 2
     (
         cd "$work" || exit 1
-        SHEDOS_STAGING_DB_URL="$db_url" \
-        SHEDOS_BUILD_USER="$(id -un)" \
+        env SHEDOS_STAGING_DB_URL="$db_url" \
+            SHEDOS_BUILD_USER="$(id -un)" \
+            SHEDOS_PKGREL_PUSH=true \
+            "$@" \
             bash "$repo_root/scripts/build-package.sh" '["."]'
     ) > "$work/build.log" 2>&1
 }
@@ -105,13 +130,15 @@ start_http_server() {
 }
 
 # --- case: a missing staging DB is the first-publish path, and the build
-# lands exactly one package plus its checksum file in dist/.
+# lands exactly one package plus its checksum file in dist/. Nothing was
+# bumped, so the remote is never reached.
 case_build() {
-    local work
+    local work head
     work=$(mktemp -d) || return 1
     trap 'rm -rf "$work"' RETURN
 
-    cp "$fixture/PKGBUILD" "$work/PKGBUILD"
+    fixture_repo "$work"
+    head=$(git -C "$fixture_remote" rev-parse main)
     if ! build_package "$work" 'file:///nonexistent'; then
         cat "$work/build.log"
         return 1
@@ -119,6 +146,9 @@ case_build() {
 
     check 'logs the absent staging DB' \
         grep -qF 'staging DB absent — first publish' "$work/build.log"
+
+    check 'a build with nothing to bump leaves the remote alone' \
+        [ "$(git -C "$fixture_remote" rev-parse main)" = "$head" ]
 
     local listing
     listing=$(find "$work/dist" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')
@@ -130,17 +160,17 @@ case_build() {
 }
 
 # --- case: a staging DB that already carries this pkgver-pkgrel bumps the
-# PKGBUILD and records the bump as a commit.
+# PKGBUILD, records the bump as a commit and puts that commit on the remote.
+# The artifact ships the new release, so a repository left on the old one no
+# longer describes anything that was published.
 case_pkgrel_guard() {
-    local work
+    local work head
     work=$(mktemp -d) || return 1
     trap 'rm -rf "$work"' RETURN
 
     fixture_repo "$work"
-
-    mkdir -p "$work/db/shedos-ci-hello-1-1"
-    : > "$work/db/shedos-ci-hello-1-1/desc"
-    tar -czf "$work/staging.db" -C "$work/db" shedos-ci-hello-1-1
+    staging_db "$work" shedos-ci-hello-1-1
+    head=$(git -C "$fixture_remote" rev-parse main)
 
     if ! build_package "$work" "file://$work/staging.db"; then
         cat "$work/build.log"
@@ -155,8 +185,63 @@ case_pkgrel_guard() {
     check 'bump is committed' \
         [ "$subject" = 'chore(release): bump pkgrel for shedos-ci-hello' ]
 
+    check 'the bump reaches the remote' \
+        [ "$(git -C "$fixture_remote" log --format=%s -1 main)" = 'chore(release): bump pkgrel for shedos-ci-hello' ]
+    check 'and is the only commit it gained' \
+        [ "$(git -C "$fixture_remote" rev-list --count "$head..main")" = 1 ]
+
     check 'the bumped package is what got built' \
         [ -f "$work/dist/shedos-ci-hello-1-2-any.pkg.tar.zst" ]
+}
+
+# --- case: only a build whose packages can be published pushes its bump. A
+# pull request builds a merge of the branch into main, and pushing that would
+# merge the pull request.
+case_pkgrel_push_withheld() {
+    local work head
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' RETURN
+
+    fixture_repo "$work"
+    staging_db "$work" shedos-ci-hello-1-1
+    head=$(git -C "$fixture_remote" rev-parse main)
+
+    if ! build_package "$work" "file://$work/staging.db" SHEDOS_PKGREL_PUSH=false; then
+        cat "$work/build.log"
+        return 1
+    fi
+
+    check 'the bump is still committed' \
+        [ "$(git -C "$work" log -1 --format=%s)" = 'chore(release): bump pkgrel for shedos-ci-hello' ]
+    check 'the remote is untouched' \
+        [ "$(git -C "$fixture_remote" rev-parse main)" = "$head" ]
+    check 'and the build says the bump stayed behind' \
+        grep -qF 'the bump stays in this checkout' "$work/build.log"
+}
+
+# --- case: a bump that cannot be pushed stops the build. Publishing an
+# artifact whose release the repository never recorded is the divergence this
+# push exists to close, so it must never be the quiet outcome of a failed push.
+case_pkgrel_push_failure() {
+    local work
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' RETURN
+
+    fixture_repo "$work"
+    staging_db "$work" shedos-ci-hello-1-1
+
+    if build_package "$work" "file://$work/staging.db" \
+        "SHEDOS_PKGREL_PUSH_REMOTE=$work/nowhere.git"; then
+        echo '   a bump that could not be pushed did not stop the build'
+        return 1
+    fi
+
+    check 'the failure names the remote' \
+        grep -qF "cannot push the pkgrel bump to $work/nowhere.git" "$work/build.log"
+    check "and carries git's own words" \
+        grep -qE 'cannot push the pkgrel bump to .+: .+ \(git exit [0-9]+\)' "$work/build.log"
+    check 'makepkg never ran' [ ! -e "$work/src" ]
+    check 'and nothing reached dist' [ ! -e "$work/dist/SHA256SUMS" ]
 }
 
 # --- case: a decimal pkgrel must move forward, never back to its integer part.
@@ -171,9 +256,7 @@ case_decimal_pkgrel() {
         -c user.name=harness -c user.email=harness@shedos.invalid \
         commit -qam 'go decimal'
 
-    mkdir -p "$work/db/shedos-ci-hello-1-1.1"
-    : > "$work/db/shedos-ci-hello-1-1.1/desc"
-    tar -czf "$work/staging.db" -C "$work/db" shedos-ci-hello-1-1.1
+    staging_db "$work" shedos-ci-hello-1-1.1
 
     if ! build_package "$work" "file://$work/staging.db"; then
         cat "$work/build.log"
@@ -196,9 +279,7 @@ case_pkgrel_literal_match() {
     sed -i 's/^pkgrel=.*/pkgrel=1.1/' "$work/PKGBUILD"
 
     # Differs from shedos-ci-hello-1-1.1 in one character, where the dot is.
-    mkdir -p "$work/db/shedos-ci-hello-1-1X1"
-    : > "$work/db/shedos-ci-hello-1-1X1/desc"
-    tar -czf "$work/staging.db" -C "$work/db" shedos-ci-hello-1-1X1
+    staging_db "$work" shedos-ci-hello-1-1X1
 
     if ! build_package "$work" "file://$work/staging.db"; then
         cat "$work/build.log"
@@ -619,7 +700,8 @@ case_missing_secret() {
     check 'missing secret is named' grep -qF 'SHEDOS_DISPATCH_TOKEN' <<<"$out"
 }
 
-for case in case_build case_pkgrel_guard case_decimal_pkgrel \
+for case in case_build case_pkgrel_guard case_pkgrel_push_withheld \
+           case_pkgrel_push_failure case_decimal_pkgrel \
            case_pkgrel_literal_match case_makepkg_argv \
            case_staging_db_404 case_staging_db_unusable case_payload \
            case_payload_build_failure case_rollup_all_pass \

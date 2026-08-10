@@ -19,6 +19,14 @@ the package's `pkgver-pkgrel`. If that release is already published, it moves
 `chore(release): bump pkgrel for <pkgname>`. A missing staging database means
 first publish, and the build carries on.
 
+On a push to `main` that bump is pushed back to the package repo before
+anything is built, and a push that does not land stops the build. The artifact
+carries the new release, so a repo left on the old one describes a package
+nobody can get. Nothing is pushed from a pull request build:
+`pull_request` checks out a merge of the branch into `main`, and pushing that
+would merge the pull request. The bump still happens there, it just stays in
+the checkout.
+
 **test** — `scripts/run-tests.sh` runs every `test/*/run.sh` in the package
 repo as the unprivileged `tester` user and fails if any of them fails. A suite
 directory holding a `needs-root` file is handed to `sudo` instead. A repo with
@@ -53,6 +61,12 @@ else was a syntax error under it.
 Copy `templates/caller.yml` into the package repo as
 `.github/workflows/ci.yml`. Set `packages` to the directories holding
 PKGBUILDs — `'["."]'` for a repo with one package at its root.
+
+The caller keeps the template's `permissions: contents: write`. That is what
+the pkgrel bump is pushed with: a reusable workflow can only narrow the
+permissions it was called with, never widen them, so the grant has to come from
+the caller. Only the build job takes the write; the test and publish-request
+jobs are declared `contents: read`.
 
 The caller has to pass `SHEDOS_DISPATCH_TOKEN` by name; the pipeline declares
 it as a required secret rather than taking whatever `secrets: inherit` hands
@@ -132,6 +146,11 @@ refuses a connection on loopback to separate a first publish from a broken one,
 prints the makepkg invocation for both the sudo and the direct branch without
 running either, rolls up stand-in suites that pass, fail and skip, and checks
 the dispatch body against the contract above with a stubbed `gh`.
+
+The fixture package repo has a bare repo as its `origin`, so the bump push is
+asserted against a real remote: one new commit on a bump, an untouched head
+when nothing bumped or the build is not the one publishing, and a build that
+stops before makepkg when the push cannot land.
 
 The root lane is asserted the same way the makepkg invocation is: `sudo` is a
 stub on `PATH` that records how it was called and then runs the command as the
