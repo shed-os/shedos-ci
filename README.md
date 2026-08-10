@@ -22,7 +22,8 @@ first publish, and the build carries on.
 **test** — `scripts/run-tests.sh` runs every `test/*/run.sh` in the package
 repo as the unprivileged `tester` user and fails if any of them fails. A repo
 with no suites prints `no test suites` and passes. Set `privileged_tests: true`
-if the suites need loop devices or mounts.
+if the suites need loop devices or mounts, and have the suite `sudo` for them —
+a privileged container does not make an unprivileged user root.
 
 Each suite gets an outcome line, and the run ends on
 `N passed, M skipped, K failed`. A suite that exits clean after printing a skip

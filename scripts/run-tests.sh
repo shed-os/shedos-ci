@@ -9,11 +9,15 @@
 # having run. A skip does not fail the job; it just cannot pass for coverage.
 set -uo pipefail
 
-# The marker forms the suites use: `SKIP: reason`, `skip: reason`,
-# `<suite>: SKIP (reason)`, `skip <check> (reason)`, `<check> skipped`. Matched
-# on a word boundary so a flag like --skippgpcheck in an echoed command line
-# does not read as one.
-SKIP_MARKER='(^|[^[:alnum:]])skip(s|ped|ping)?([^[:alnum:]]|$)'
+# The forms suites announce a skip in: a line opening with `skip` or `skip:`,
+# the word SKIP in capitals anywhere in a line, or skipped/skipping. Bare
+# lowercase `skip` only counts at the start of a line — matched anywhere it
+# would fire on a suite whose own name carries the word, and a rollup that
+# always says SKIP says nothing.
+announced_a_skip() {
+    grep -qE '(^|[^[:alnum:]])SKIP([^[:alnum:]]|$)' "$1" ||
+        grep -qiE '^[[:space:]]*skip[[:space:]:]|(^|[^[:alnum:]])skipp(ed|ing)([^[:alnum:]]|$)' "$1"
+}
 
 shopt -s nullglob
 runners=(test/*/run.sh)
@@ -38,7 +42,7 @@ for runner in "${runners[@]}"; do
     # A failing suite is FAIL whatever else it printed — a suite that skipped
     # one check and then broke on another has not been skipped.
     bash "$runner" 2>&1 | tee "$log" || outcome=FAIL
-    if [[ $outcome == PASS ]] && grep -qEi "$SKIP_MARKER" "$log"; then
+    if [[ $outcome == PASS ]] && announced_a_skip "$log"; then
         outcome=SKIP
     fi
 

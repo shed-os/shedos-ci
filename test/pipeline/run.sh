@@ -468,23 +468,26 @@ case_rollup_no_suites() {
 
 # --- case: a suite that bowed out is reported as skipped, never as passed. It
 # exits zero either way, so the marker in its output is the only thing that
-# keeps it from counting as coverage it did not deliver.
+# keeps it from counting as coverage it did not deliver. The third suite is
+# named for the word: a rollup that reads a suite's own name as a marker would
+# report SKIP forever and stop meaning anything.
 case_rollup_skip() {
     local work
     work=$(mktemp -d) || return 1
     trap 'rm -rf "$work"' RETURN
 
     make_suite "$work" widget 'echo "widget: SKIP (missing losetup)"'
-    make_suite "$work" x-gadget 'echo "gadget: skip T4_needs_zsh (zsh not installed)"'
+    make_suite "$work" x-gadget 'echo "skip T4_needs_zsh (zsh not installed)"'
+    make_suite "$work" skip-list 'echo "skip-list: 3 checks passed"'
     run_rollup "$work"
 
     check 'a skipped suite does not fail the job' [ "$rollup_rc" -eq 0 ]
-    check 'the skip is reported as one' grep -qx 'SKIP widget' <<<"$rollup_out"
-    check 'a lowercase marker counts too' grep -qx 'SKIP x-gadget' <<<"$rollup_out"
-    check 'nothing skipped is reported as passed' \
-        bash -c "! grep -q '^PASS ' <<<\"\$1\"" _ "$rollup_out"
+    check 'a capitalised marker is caught' grep -qx 'SKIP widget' <<<"$rollup_out"
+    check 'a line-opening marker is caught' grep -qx 'SKIP x-gadget' <<<"$rollup_out"
+    check 'a suite named for the word still passes' \
+        grep -qx 'PASS skip-list' <<<"$rollup_out"
     check 'the tally separates skips from passes' \
-        grep -qF '0 passed, 2 skipped, 0 failed' <<<"$rollup_out"
+        grep -qF '1 passed, 2 skipped, 0 failed' <<<"$rollup_out"
 }
 
 # --- case: without the dispatch secret the publish must stop and say so.
