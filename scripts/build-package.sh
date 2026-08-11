@@ -81,6 +81,58 @@ pkgbuild_field() {
     )
 }
 
+# The tag a source pins itself to, empty for every other kind of source. The
+# fragment is read after sourcing, so $pkgver has already been substituted.
+pkgbuild_source_tag() {
+    local dir=$1
+    (
+        set +eu
+        # shellcheck source=/dev/null
+        source "$dir/PKGBUILD" > /dev/null 2>&1
+        local entry
+        for entry in "${source[@]}"; do
+            case $entry in
+                *'#tag='*) printf '%s\n' "${entry##*#tag=}"; return ;;
+            esac
+        done
+    )
+}
+
+# A source pinned to a tag is built from the tag, never from the checkout the
+# PKGBUILD sits in. A change that lands on the branch with the tag left where it
+# was builds green and publishes the old tree — a release nobody can tell apart
+# from the one they asked for. So the build that publishes says so and stops.
+#
+# The PKGBUILD and its install scriptlet are the exception, because makepkg
+# reads both from the checkout: the pkgrel guard's own bump moves the PKGBUILD
+# every time and it is not lag.
+guard_source_tag() {
+    local dir=$1 pkgname=$2 tag=$3
+    local prefix install_file path
+    local -a lagging=()
+
+    if ! git -C "$dir" fetch --quiet "$PUSH_REMOTE" "refs/tags/$tag" 2> /dev/null; then
+        echo "$pkgname cannot read tag $tag from $PUSH_REMOTE" >&2
+        exit 1
+    fi
+
+    prefix=$(git -C "$dir" rev-parse --show-prefix)
+    install_file=$(pkgbuild_field "$dir" install)
+
+    while IFS= read -r path; do
+        [[ -n $path ]] || continue
+        path=${path#"$prefix"}
+        [[ $path == PKGBUILD ]] && continue
+        [[ -n $install_file && $path == "$install_file" ]] && continue
+        lagging+=("$path")
+    done < <(git -C "$dir" diff --name-only FETCH_HEAD HEAD -- .)
+
+    if (( ${#lagging[@]} > 0 )); then
+        echo "$pkgname builds from tag $tag but ${lagging[*]} moved since — re-cut the tag" >&2
+        exit 1
+    fi
+}
+
 # The artifact carries the new release, so a checkout left on the old one
 # describes a package nobody can get. A push that does not land is that same
 # divergence reached quietly, so it stops the build. Pushing is off until told:
@@ -223,6 +275,15 @@ for dir in "${dirs[@]}"; do
     pkgver=$(pkgbuild_field "$dir" pkgver)
     pkgrel=$(pkgbuild_field "$dir" pkgrel)
     echo "════════ $pkgname $pkgver-$pkgrel ════════"
+
+    # Before the pkgrel guard, so a lagging tag is not answered with a bump
+    # commit pushed for a build that then stops. Keyed off the same question
+    # the bump is: is this the build whose packages get published. A pull
+    # request cannot tag what it has not merged and publishes nothing.
+    source_tag=$(pkgbuild_source_tag "$dir")
+    if [[ -n $source_tag && $PUSH_BUMP == true ]]; then
+        guard_source_tag "$dir" "$pkgname" "$source_tag"
+    fi
 
     guard_pkgrel "$dir" "$pkgname" "$pkgver" "$pkgrel"
     run_makepkg "$dir"

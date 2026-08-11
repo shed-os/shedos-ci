@@ -527,6 +527,85 @@ case_shedos_channels() {
         [ "$(grep -c '^SigLevel = Required DatabaseRequired$' "$work/pacman.conf")" -eq 2 ]
 }
 
+# --- case: a package that takes its source from a tag ships that tag, not this
+# checkout. A change landing on main with the tag left behind builds green and
+# publishes the old tree, which is a release nobody can tell apart from the one
+# they asked for, so the build that publishes stops instead.
+case_source_tag_guard() {
+    local work
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' RETURN
+
+    fixture_repo "$work"
+
+    # The source has to be in the tree the tag names, so it lands first.
+    {
+        cat "$fixture/PKGBUILD"
+        printf 'source=("git+file://%s#tag=$pkgver")\n' "$fixture_remote"
+        printf "sha256sums=('SKIP')\n"
+    } > "$work/PKGBUILD"
+    git -C "$work" add PKGBUILD
+    git -C "$work" -c user.name=harness -c user.email=harness@shedos.invalid \
+        commit -qm 'build from the tag'
+    git -C "$work" push -q origin main
+    git -C "$work" -c tag.gpgsign=false tag 1
+    git -C "$work" push -q origin refs/tags/1
+
+    rm -rf "$work/dist"
+    build_package "$work" 'file:///nonexistent' SHEDOS_PKGREL_PUSH=true
+    check 'a tag level with the checkout builds' \
+        [ -f "$work/dist/shedos-ci-hello-1-1-any.pkg.tar.zst" ]
+
+    # Only the PKGBUILD moves, which the build reads from the checkout and never
+    # from the tag — the pkgrel guard's own bump takes exactly this shape.
+    sed -i 's/^pkgrel=.*/pkgrel=2/' "$work/PKGBUILD"
+    git -C "$work" -c user.name=harness -c user.email=harness@shedos.invalid \
+        commit -qam 'bump the release'
+    rm -rf "$work/dist"
+    build_package "$work" 'file:///nonexistent' SHEDOS_PKGREL_PUSH=true
+    check 'a PKGBUILD-only change is not lag' \
+        [ -f "$work/dist/shedos-ci-hello-1-2-any.pkg.tar.zst" ]
+
+    printf 'new payload\n' > "$work/payload.txt"
+    git -C "$work" add payload.txt
+    git -C "$work" -c user.name=harness -c user.email=harness@shedos.invalid \
+        commit -qm 'change what the package ships'
+
+    rm -rf "$work/dist"
+    build_package "$work" 'file:///nonexistent' SHEDOS_PKGREL_PUSH=true
+    check 'source that moved past the tag stops the build' [ $? -ne 0 ]
+    check 'nothing was built' [ -z "$(ls -A "$work/dist" 2>/dev/null)" ]
+    check 'the lagging tag is named' grep -qF 'tag 1' "$work/build.log"
+    check 'and so is the path that moved' grep -qF 'payload.txt' "$work/build.log"
+
+    # A pull request cannot tag what it has not merged, and it publishes
+    # nothing, so the same lag is not its problem.
+    rm -rf "$work/dist"
+    build_package "$work" 'file:///nonexistent'
+    check 'a build that publishes nothing is not stopped by lag' \
+        [ -f "$work/dist/shedos-ci-hello-1-2-any.pkg.tar.zst" ]
+
+    # A commit pin names one immutable tree, so there is no lag to have.
+    sed -i 's/#tag=\$pkgver/#commit=HEAD/' "$work/PKGBUILD"
+    git -C "$work" -c user.name=harness -c user.email=harness@shedos.invalid \
+        commit -qam 'pin the commit instead'
+    rm -rf "$work/dist"
+    build_package "$work" 'file:///nonexistent' SHEDOS_PKGREL_PUSH=true
+    check 'a commit pin is never checked for lag' \
+        grep -qvF 're-cut the tag' "$work/build.log"
+
+    # A tag the remote does not carry is the shape every build took before the
+    # source arrays had one.
+    git -C "$work" push -q origin :refs/tags/1
+    sed -i 's/#commit=HEAD/#tag=$pkgver/' "$work/PKGBUILD"
+    git -C "$work" -c user.name=harness -c user.email=harness@shedos.invalid \
+        commit -qam 'back to the tag'
+    rm -rf "$work/dist"
+    build_package "$work" 'file:///nonexistent' SHEDOS_PKGREL_PUSH=true
+    check 'a tag the remote does not carry stops the build' \
+        grep -qF 'cannot read tag 1' "$work/build.log"
+}
+
 # --- case: over HTTP an absent staging DB arrives as a 404, and that is still
 # the first-publish path.
 case_staging_db_404() {
@@ -905,7 +984,7 @@ for case in case_build case_pkgrel_guard case_pkgrel_push_withheld \
            case_pkgrel_remote_unreadable \
            case_push_gate_matches_publish case_decimal_pkgrel \
            case_pkgrel_literal_match case_makepkg_argv case_build_options \
-           case_shedos_channels \
+           case_shedos_channels case_source_tag_guard \
            case_staging_db_404 case_staging_db_unusable case_payload \
            case_payload_build_failure case_rollup_all_pass \
            case_rollup_failure case_rollup_no_suites case_rollup_skip \

@@ -38,6 +38,16 @@ that run. So a package repo that protects `main` cannot use the pipeline as it
 stands — the push is refused, the build goes red, and the answer is to lift the
 protection or move `pkgrel` by hand, never to hand the job a stronger token.
 
+A package whose `source` pins a git tag — `#tag=$pkgver` — is built from that
+tag and not from the checkout the PKGBUILD sits in, so a change that lands on
+`main` with the tag left where it was would build green and publish the old
+tree. Before anything else, the build that publishes compares the tag against
+`HEAD` for each package directory and stops if they have parted, naming the tag
+and the paths that moved. The PKGBUILD and its install scriptlet are excluded
+because makepkg reads both from the checkout: the pkgrel bump moves the PKGBUILD
+on every republish and that is not lag. A pull request is not checked — it
+cannot tag what it has not merged, and it publishes nothing.
+
 **test** — `scripts/run-tests.sh` runs every `test/*/run.sh` in the package
 repo as the unprivileged `tester` user and fails if any of them fails. A suite
 directory holding a `needs-root` file is handed to `sudo` instead. A repo with
