@@ -515,7 +515,8 @@ case_shedos_channels() {
     local staging published
     staging=$(grep -n '^\[shedostest\]$' "$work/pacman.conf" | cut -d: -f1)
     published=$(grep -n '^\[shedos\]$' "$work/pacman.conf" | cut -d: -f1)
-    check 'both channels are configured' [ -n "$staging" ] && [ -n "$published" ]
+    check 'the staging channel is configured' [ -n "$staging" ]
+    check 'the published channel is configured' [ -n "$published" ]
     check 'staging is listed first, so a carved package wins' \
         [ "${staging:-0}" -lt "${published:-0}" ]
     check 'staging points at the staging channel' \
