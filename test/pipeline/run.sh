@@ -32,6 +32,8 @@ check() {
     fi
 }
 
+not() { ! "$@"; }
+
 # Joins argv with a separator no argument can contain, so a comparison
 # cannot be fooled by an element that holds spaces.
 join_argv() {
@@ -591,8 +593,10 @@ case_source_tag_guard() {
         commit -qam 'pin the commit instead'
     rm -rf "$work/dist"
     build_package "$work" 'file:///nonexistent' SHEDOS_PKGREL_PUSH=true
-    check 'a commit pin is never checked for lag' \
-        grep -qvF 're-cut the tag' "$work/build.log"
+    check 'a commit pin builds' \
+        [ -f "$work/dist/shedos-ci-hello-1-2-any.pkg.tar.zst" ]
+    check 'and is never checked for lag' \
+        not grep -qF 're-cut the tag' "$work/build.log"
 
     # A tag the remote does not carry is the shape every build took before the
     # source arrays had one.
