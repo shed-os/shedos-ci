@@ -395,6 +395,41 @@ case_build_options() {
         [ "$(sed -n 's/^options = //p' <<<"$info" | tr '\n' ' ')" = 'strip docs !libtool !staticlibs emptydirs zipman purge !debug lto ' ]
 }
 
+# Runs the channel wiring against a scratch pacman.conf with pacman, pacman-key
+# and gpg stubbed onto PATH: the real ones need root and a keyring this machine
+# must not grow. $2 is the fingerprint the stubbed gpg reports for the download.
+# Leaves the run's output in $work/channels.log and the calls in $work/probe.log.
+channels_stubs() {
+    local work=$1
+    mkdir -p "$work/bin"
+    cat > "$work/bin/pacman-key" <<'STUB'
+#!/bin/sh
+printf 'pacman-key %s\n' "$*" >> "$PROBE_LOG"
+STUB
+    cat > "$work/bin/pacman" <<'STUB'
+#!/bin/sh
+printf 'pacman %s\n' "$*" >> "$PROBE_LOG"
+STUB
+    cat > "$work/bin/gpg" <<'STUB'
+#!/bin/sh
+printf 'pub:u:255:22:0:1714000000:::u:::scESC::::::ed25519:::0:\n'
+printf 'fpr:::::::::%s:\n' "$STUB_FPR"
+STUB
+    chmod +x "$work/bin/pacman-key" "$work/bin/pacman" "$work/bin/gpg"
+    printf '[options]\n' > "$work/pacman.conf"
+    : > "$work/probe.log"
+}
+
+enable_channels() {
+    local work=$1 key_url=$2 fpr=$3
+    PATH="$work/bin:$PATH" \
+    PROBE_LOG="$work/probe.log" \
+    STUB_FPR="$fpr" \
+    PACMAN_CONF="$work/pacman.conf" \
+    SHEDOS_KEY_URL="$key_url" \
+        bash "$repo_root/scripts/enable-shedos-channels.sh" > "$work/channels.log" 2>&1
+}
+
 # --- case: the invocation CI actually uses runs through sudo, which this box
 # cannot execute, so assert the argv both branches construct instead.
 case_makepkg_argv() {
@@ -425,6 +460,70 @@ case_makepkg_argv() {
     check 'sudo argv keeps PKGDEST as one word' [ "${#got[@]}" -eq 11 ]
     check 'sudo argv matches' \
         [ "$(join_argv "${got[@]}")" = "$(join_argv "${want[@]}")" ]
+}
+
+# --- case: the containers reach the ShedOS channels, staging in front of the
+# published one, and a key nobody pinned never gets trusted. A package repo
+# whose depends name other ShedOS packages cannot be built without this, and
+# the cost of getting it wrong is a build container trusting a key it was
+# handed rather than one it already knew.
+case_shedos_channels() {
+    local work
+    work=$(mktemp -d) || return 1
+    trap 'kill "$http_server_pid" 2>/dev/null; rm -rf "$work"' RETURN
+
+    [[ -f $repo_root/scripts/enable-shedos-channels.sh ]] || {
+        printf '  FAIL scripts/enable-shedos-channels.sh is missing\n'
+        return 1
+    }
+
+    channels_stubs "$work"
+    local pinned=56C3F7528D42C4E526556CE2DAF4230B5648D916
+
+    start_http_server "$work/ua.txt" "$work/httpd.log"
+    if [[ -z $http_server_port ]]; then
+        cat "$work/httpd.log"
+        return 1
+    fi
+    enable_channels "$work" "http://127.0.0.1:$http_server_port/shedos.gpg" "$pinned"
+    check 'a keyring that cannot be fetched stops the run' [ $? -ne 0 ]
+    check 'the key fetch names itself to the CDN' \
+        [ "$(head -1 "$work/ua.txt" 2>/dev/null)" = "$expected_ua" ]
+    check 'nothing was trusted on the way out' \
+        [ ! -s "$work/probe.log" ]
+
+    printf 'keyring\n' > "$work/shedos.gpg"
+    enable_channels "$work" "file://$work/shedos.gpg" DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF
+    check 'a key nobody pinned is refused' [ $? -ne 0 ]
+    check 'the refusal names the key' \
+        grep -qF 'DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF' "$work/channels.log"
+    check 'a refused keyring leaves pacman untouched' \
+        [ "$(cat "$work/pacman.conf")" = '[options]' ]
+
+    enable_channels "$work" "file://$work/shedos.gpg" "$pinned"
+    if (( $? != 0 )); then
+        cat "$work/channels.log"
+        return 1
+    fi
+
+    check 'the pinned key is added' \
+        grep -q '^pacman-key --add ' "$work/probe.log"
+    check 'and locally signed' \
+        grep -qF "pacman-key --lsign-key $pinned" "$work/probe.log"
+    check 'the databases are resynced' grep -q '^pacman -Sy' "$work/probe.log"
+
+    local staging published
+    staging=$(grep -n '^\[shedostest\]$' "$work/pacman.conf" | cut -d: -f1)
+    published=$(grep -n '^\[shedos\]$' "$work/pacman.conf" | cut -d: -f1)
+    check 'both channels are configured' [ -n "$staging" ] && [ -n "$published" ]
+    check 'staging is listed first, so a carved package wins' \
+        [ "${staging:-0}" -lt "${published:-0}" ]
+    check 'staging points at the staging channel' \
+        grep -qF 'Server = https://repo.shedos.org/staging/test/$arch' "$work/pacman.conf"
+    check 'the published channel is the fallback' \
+        grep -qF 'Server = https://repo.shedos.org/test/$arch' "$work/pacman.conf"
+    check 'neither channel takes an unsigned database' \
+        [ "$(grep -c '^SigLevel = Required DatabaseRequired$' "$work/pacman.conf")" -eq 2 ]
 }
 
 # --- case: over HTTP an absent staging DB arrives as a 404, and that is still
@@ -805,6 +904,7 @@ for case in case_build case_pkgrel_guard case_pkgrel_push_withheld \
            case_pkgrel_remote_unreadable \
            case_push_gate_matches_publish case_decimal_pkgrel \
            case_pkgrel_literal_match case_makepkg_argv case_build_options \
+           case_shedos_channels \
            case_staging_db_404 case_staging_db_unusable case_payload \
            case_payload_build_failure case_rollup_all_pass \
            case_rollup_failure case_rollup_no_suites case_rollup_skip \

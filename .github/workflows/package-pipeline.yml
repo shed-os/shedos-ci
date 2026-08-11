@@ -104,6 +104,9 @@ jobs:
         # Container uid differs from checkout owner; avoids "dubious ownership".
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
+      - name: Enable the ShedOS channels
+        run: bash .shedos-ci/scripts/enable-shedos-channels.sh
+
       - name: Hand the tree to the build user
         run: chown -R builder:builder .
 
@@ -130,13 +133,22 @@ jobs:
       image: archlinux:latest
       options: ${{ inputs.privileged_tests && '--privileged' || '' }}
     steps:
+      # Same reason the build job takes it: the caller's test packages can now
+      # be ShedOS packages, and one of those can carry an install scriptlet
+      # that repoints /etc/pacman.conf at the production repo.
+      - name: Mark the build environment
+        run: |
+          touch /.shedos-build-environment
+          sed -i \
+            -e '/^# >>> shedos <<<$/,/^# <<< shedos >>>$/d' \
+            -e '/^# >>> shedostest <<<$/,/^# <<< shedostest >>>$/d' \
+            -e '/^# >>> shedos-testing <<<$/,/^# <<< shedos-testing >>>$/d' \
+            /etc/pacman.conf
+
       - name: Install test dependencies
-        env:
-          TEST_PACKAGES: ${{ inputs.test_packages }}
         run: |
           pacman -Syu --noconfirm
-          read -r -a extra <<< "$TEST_PACKAGES"
-          pacman -S --needed --noconfirm base-devel git sudo jq "${extra[@]}"
+          pacman -S --needed --noconfirm base-devel git sudo jq curl
           pacman-key --init
           pacman-key --populate archlinux
           # makepkg refuses to run as root, and a suite that only ever runs
@@ -157,6 +169,17 @@ jobs:
 
       - name: Trust workspace for git
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Enable the ShedOS channels
+        run: bash .shedos-ci/scripts/enable-shedos-channels.sh
+
+      # After the channels, because some of them resolve there.
+      - name: Install the caller's test packages
+        env:
+          TEST_PACKAGES: ${{ inputs.test_packages }}
+        run: |
+          read -r -a extra <<< "$TEST_PACKAGES"
+          [ ${#extra[@]} -eq 0 ] || pacman -S --needed --noconfirm "${extra[@]}"
 
       - name: Hand the tree to the test user
         run: chown -R tester:tester .

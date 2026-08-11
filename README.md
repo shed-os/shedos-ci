@@ -52,7 +52,7 @@ when an optional dependency is missing, and a rollup that reads those as tested
 is how a package ships with its own suite never having run. A skip passes the
 job only if the caller named that suite in `allowed_skips`; any other skip
 fails it, so no suite stops running without someone deciding it could. Whatever
-the suites need beyond `base-devel`, `git`, `sudo` and `jq` goes in
+the suites need beyond `base-devel`, `git`, `sudo`, `jq` and `curl` goes in
 `test_packages`, and whatever they read out of the environment goes in
 `test_env`.
 
@@ -60,6 +60,33 @@ the suites need beyond `base-devel`, `git`, `sudo` and `jq` goes in
 `dist/SHA256SUMS`, and fires a `publish-request` repository dispatch at
 `shed-os/shedos-release`. Nothing is signed or uploaded here; publishing
 happens only in shedos-release.
+
+## The ShedOS channels
+
+The build and test containers get both ShedOS channels before anything is
+installed into them, because a package repo's `depends` name other ShedOS
+packages and a stock `archlinux:latest` can resolve none of them.
+`scripts/enable-shedos-channels.sh` writes them in one order and it is the
+order that matters: `[shedostest]` on the staging channel first, `[shedos]` on
+the published one behind it. Pacman takes the first repository carrying a name,
+so a repo that has been carved wins with its own package the moment it
+publishes to staging, and everything not carved yet still resolves from what
+the monolith published. That is what lets the carve happen one repository at a
+time without touching this repo again.
+
+Trust is bootstrapped the way `shedman migrate` bootstraps it on an Arch box,
+because both are the same problem: a machine that owns no ShedOS package and
+has nothing to verify the repo with. The keyring comes from the channel root,
+every primary key in it has to be on the fingerprint list the script pins, and
+one key that is not stops the job rather than being trusted alongside the ones
+that are. Both channels are declared `SigLevel = Required DatabaseRequired`, so
+an unsigned database is a failure and not a fallback. A key rotation adds the
+new fingerprint to that list together with the keyring.
+
+Both jobs also touch `/.shedos-build-environment` and strip any ShedOS fence
+from `/etc/pacman.conf` first. A ShedOS package can carry an install scriptlet
+that appends its own `[shedos]` block, which would collide with the one the
+script just wrote.
 
 All three jobs run in the same `archlinux:latest` container, publish-request
 included even though it only calls an API. It is there so the tools the scripts
@@ -120,10 +147,11 @@ caller pinning `package-pipeline.yml@v1` has to pass `ci_ref: v1` as well or it
 will run v1's workflow with main's scripts.
 
 `test_packages` is a space-separated list of extra pacman packages to install
-in the test job — `'python-pytest scdoc'` and so on. The job installs
-`base-devel git sudo jq` on its own and nothing else, so a suite reaching for
-anything beyond that skips itself, and the rollup reports it as `SKIP` rather
-than letting it pass for tested. The suites run as `tester`, an unprivileged
+in the test job — `'python-pytest scdoc'`, and ShedOS packages like
+`shedos-branding` too, since the channels are there. The job installs
+`base-devel git sudo jq curl` on its own and nothing else, so a suite reaching
+for anything beyond that skips itself, and the rollup reports it as `SKIP`
+rather than letting it pass for tested. The suites run as `tester`, an unprivileged
 user in `wheel` with passwordless sudo, mirroring how they run on a
 workstation; a suite that needs root has to ask for it.
 
@@ -175,7 +203,11 @@ both repos at once.
 ## Tests
 
 `bash test/pipeline/run.sh` exercises the scripts on a workstation — no
-container, no root, nothing off this machine. It builds a fixture package,
+container, no root, nothing off this machine. The channel wiring is covered
+there too, with `pacman`, `pacman-key` and `gpg` stubbed onto `PATH`: the
+harness asserts the ordering, that both channels require a signed database,
+that the key fetch names itself, and that a keyring holding a fingerprint
+nobody pinned is refused with `/etc/pacman.conf` left untouched. It builds a fixture package,
 drives the pkgrel guard against a hand-made staging database, serves a 404 and
 refuses a connection on loopback to separate a first publish from a broken one,
 prints the makepkg invocation for both the sudo and the direct branch without
