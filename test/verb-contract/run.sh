@@ -211,7 +211,7 @@ case_verb_without_completions() {
     check 'it names the mode' says '--complete-fish'
 }
 
-# --- case: a verb with no flags answers with nothing, which is an answer -----
+# --- case: silence has to be declared before it counts as an answer ----------
 
 case_verb_with_no_flags() {
     local work
@@ -219,12 +219,42 @@ case_verb_with_no_flags() {
     trap 'rm -rf "$work"' RETURN
     mkdir -p "$work/flagless"
     declare_verb "$work/flagless" alpha.toml \
-        'name = "alpha"' 'package = "flagless"' 'man = "alpha.1"' 'description = "a verb"'
+        'name = "alpha"' 'package = "flagless"' 'man = "alpha.1"' \
+        'description = "a verb"' 'completes = false'
     build_pkg "$work" flagless '' 'alpha:silent' 'alpha.toml' 'alpha.1' || return 1
 
     run_check "$built"
-    check 'a verb with nothing to complete still passes' [ "$rc" -eq 0 ]
+    check 'a verb that declared it has nothing to complete passes' [ "$rc" -eq 0 ]
     [[ $rc -eq 0 ]] || printf '%s\n' "$out"
+}
+
+case_undeclared_silence() {
+    local work
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' RETURN
+    mkdir -p "$work/mute"
+    declare_verb "$work/mute" alpha.toml \
+        'name = "alpha"' 'package = "mute"' 'man = "alpha.1"' 'description = "a verb"'
+    build_pkg "$work" mute '' 'alpha:silent' 'alpha.toml' 'alpha.1' || return 1
+
+    run_check "$built"
+    check 'silence nobody declared fails the check' [ "$rc" -ne 0 ]
+    check 'it names the mode' says '--complete-bash'
+}
+
+case_declared_silence_that_speaks() {
+    local work
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' RETURN
+    mkdir -p "$work/talkative"
+    declare_verb "$work/talkative" alpha.toml \
+        'name = "alpha"' 'package = "talkative"' 'man = "alpha.1"' \
+        'description = "a verb"' 'completes = false'
+    build_pkg "$work" talkative '' 'alpha' 'alpha.toml' 'alpha.1' || return 1
+
+    run_check "$built"
+    check 'a verb that declared silence and then speaks fails the check' [ "$rc" -ne 0 ]
+    check 'it says the declaration is the thing that is wrong' says 'completes = false'
 }
 
 
@@ -322,6 +352,7 @@ case_reports_every_package() {
 for c in case_complete_package case_undeclared_verb case_declaration_without_verb \
          case_declaration_without_man case_declaration_incomplete \
          case_verb_without_completions case_verb_with_no_flags \
+         case_undeclared_silence case_declared_silence_that_speaks \
          case_internal_verb case_no_verbs case_collision_within_package \
          case_outside_the_contract case_reports_every_package; do
     printf '\n── %s\n' "${c#case_}"
