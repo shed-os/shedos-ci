@@ -40,3 +40,6 @@ jobs:
         run: |
           chown -R tester:tester .
           sudo -u tester -H bash test/pipeline/run.sh
+
+      - name: Run the verb contract harness
+        run: sudo -u tester -H bash test/verb-contract/run.sh

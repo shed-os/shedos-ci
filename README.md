@@ -48,8 +48,9 @@ because makepkg reads both from the checkout: the pkgrel bump moves the PKGBUILD
 on every republish and that is not lag. A pull request is not checked — it
 cannot tag what it has not merged, and it publishes nothing.
 
-**test** — `scripts/run-tests.sh` runs every `test/*/run.sh` in the package
-repo as the unprivileged `tester` user and fails if any of them fails. A suite
+**test** — takes the build's artifact and holds every package in it to
+shedman's verb contract, then `scripts/run-tests.sh` runs every `test/*/run.sh`
+in the package repo as the unprivileged `tester` user and fails if any of them fails. A suite
 directory holding a `needs-root` file is handed to `sudo` instead. A repo with
 no suites prints `no test suites` and passes. Set `privileged_tests: true` if
 the suites need loop devices or mounts — a privileged container does not make
@@ -65,6 +66,24 @@ fails it, so no suite stops running without someone deciding it could. Whatever
 the suites need beyond `base-devel`, `git`, `sudo`, `jq` and `curl` goes in
 `test_packages`, and whatever they read out of the environment goes in
 `test_env`.
+
+`scripts/check-verb-contract.sh` reads the built package rather than the tree
+it came from, because "did this verb actually ship" is a question only the
+artifact answers: a verb reaches a machine because a declaration under
+`/usr/share/shedman/verbs.d/` names it, and a hand-kept list in a PKGBUILD is
+how a green-tested verb used to stay behind. Every executable in
+`/usr/libexec/shedman` has to be declared, every declaration has to name an
+executable, a man page the package ships, its owning package and what it does,
+and every verb that is not an internal `_helper` has to answer
+`--complete-bash`, `--complete-zsh` and `--complete-fish` — which is why this
+runs in the test job, where the caller's `test_packages` are installed and the
+verbs can start.
+
+A package joins the contract by saying so: it ships a declaration, it depends
+on `shedman`, or it is `shedman`. One that ships a verb without ever saying so
+is named in the log and not failed, because the contract cannot reach back past
+the release that introduced it. Every finding in every package is reported
+before the job stops.
 
 **publish-request** — on a push to `main` only, downloads the artifact, reads
 `dist/SHA256SUMS`, and fires a `publish-request` repository dispatch at
@@ -245,6 +264,13 @@ traffic with no User-Agent, and a GitHub runner is a datacenter address: a
 fetch that loses its UA answers 403 in CI while still working from a desk, and
 the assertion is what keeps that from being found in production.
 
-`.github/workflows/ci.yml` runs that harness and parses every workflow file on
+`bash test/verb-contract/run.sh` builds a package per case with makepkg and
+hands it to the contract check: a verb with no declaration, a declaration with
+no verb, one naming a man page the package never shipped, one missing a field,
+a verb that refuses a completion mode, an internal verb that is not asked, a
+package with no verbs at all, and one shipping a verb from outside the contract
+before and after it declares the dependency that joins it.
+
+`.github/workflows/ci.yml` runs both harnesses and parses every workflow file on
 every push and pull request, so the pipeline the package repos consume is gated
 by the same suite.
