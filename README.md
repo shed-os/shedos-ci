@@ -72,8 +72,9 @@ it came from, because "did this verb actually ship" is a question only the
 artifact answers: a verb reaches a machine because a declaration under
 `/usr/share/shedman/verbs.d/` names it, and a hand-kept list in a PKGBUILD is
 how a green-tested verb used to stay behind. Every executable in
-`/usr/libexec/shedman` has to be declared, every declaration has to name an
-executable, a man page the package ships, its owning package and what it does,
+`/usr/libexec/shedman` has to be declared, no two declarations may name the same
+verb, every declaration has to name an executable, a man page the package ships,
+its owning package and what it does,
 and every verb that is not an internal `_helper` has to exit clean on
 `--complete-bash`, `--complete-zsh` and `--complete-fish`. A verb with no flags
 answers with nothing and that is an answer; one that errors or hangs leaves the
@@ -270,7 +271,8 @@ the assertion is what keeps that from being found in production.
 hands it to the contract check: a verb with no declaration, a declaration with
 no verb, one naming a man page the package never shipped, one missing a field,
 a verb that refuses a completion mode, one with nothing to complete, an
-internal verb that is not asked, a package with no verbs at all, and one shipping a verb from outside the contract
+internal verb that is not asked, one name claimed by two declarations, a package
+with no verbs at all, and one shipping a verb from outside the contract
 before and after it declares the dependency that joins it.
 
 `.github/workflows/ci.yml` runs both harnesses and parses every workflow file on

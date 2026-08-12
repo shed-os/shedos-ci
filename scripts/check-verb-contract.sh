@@ -8,6 +8,7 @@
 #
 # For each package under the contract:
 #   * every executable in /usr/libexec/shedman has a declaration naming it
+#   * no two declarations name the same verb
 #   * every declaration names an executable the package ships
 #   * every declaration carries name, package, man and description
 #   * every declaration's man page is one the package ships
@@ -78,6 +79,10 @@ check_package() {
 
         if [[ -z $name ]]; then
             report "${decl#./} declares no name"
+            continue
+        fi
+        if [[ -n ${owner_of[$name]:-} ]]; then
+            report "$name is declared twice in $pkgname, by ${owner_of[$name]} and ${decl#./}"
             continue
         fi
         owner_of[$name]=${decl#./}
