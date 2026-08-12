@@ -12,10 +12,11 @@
 #   * every declaration names an executable the package ships
 #   * every declaration carries name, package, man and description
 #   * every declaration's man page is one the package ships
-#   * every verb whose name is not internal exits clean on --complete-bash,
-#     --complete-zsh and --complete-fish, because that is what the completers
-#     ask it. A verb with no flags answers with nothing and that is an answer;
-#     one that errors or hangs leaves the completer with a broken tab key
+#   * every verb whose name is not internal answers --complete-bash,
+#     --complete-zsh and --complete-fish with a flag list, or declares
+#     `completes = false` and answers all three with nothing. Silence has to be
+#     declared, because otherwise a verb that never implemented the contract
+#     reads the same as one that has no flags to offer
 #
 # A package is under the contract once it says so: it ships a declaration, it
 # depends on shedman, or it is shedman. One that ships a verb without ever
@@ -45,7 +46,7 @@ field() {
 report() { printf '  %s\n' "$*"; findings=$((findings + 1)); }
 
 check_package() {
-    local pkg=$1 root=$2 pkgname declared_by_dep name owner man desc
+    local pkg=$1 root=$2 pkgname declared_by_dep name owner man desc completes
     local -a verbs=() decls=()
 
     pkgname=$(sed -n 's/^pkgname = //p' "$root/.PKGINFO" | head -1)
@@ -76,6 +77,9 @@ check_package() {
         owner=$(field "$file" package)
         man=$(field "$file" man)
         desc=$(field "$file" description)
+        # An unquoted TOML boolean, so it is read without the quote stripping.
+        completes=$(sed -n 's/^[[:space:]]*completes[[:space:]]*=[[:space:]]*\([a-z]*\).*/\1/p' \
+            "$file" | head -1)
 
         if [[ -z $name ]]; then
             report "${decl#./} declares no name"
@@ -103,10 +107,16 @@ check_package() {
         # Internal helpers are not offered by the completers, so nothing asks
         # them what they complete with.
         [[ $name == _* ]] && continue
-        local mode
+        local mode answer
         for mode in --complete-bash --complete-zsh --complete-fish; do
-            if ! timeout 30 "$root/$LIBEXEC/$name" "$mode" > /dev/null 2>&1; then
+            if ! answer=$(timeout 30 "$root/$LIBEXEC/$name" "$mode" 2>/dev/null); then
                 report "$name does not answer $mode"
+            elif [[ $completes == false ]]; then
+                [[ -z ${answer//[[:space:]]/} ]] \
+                    || report "$name declares completes = false and $mode answers anyway"
+            else
+                [[ -n ${answer//[[:space:]]/} ]] \
+                    || report "$name answers nothing to $mode and declares no completes = false"
             fi
         done
     done
