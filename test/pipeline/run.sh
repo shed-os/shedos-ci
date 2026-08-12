@@ -576,6 +576,49 @@ case_source_tag_guard() {
     check 'a PKGBUILD-only change is not lag' \
         [ -f "$work/dist/shedos-ci-hello-1-2-any.pkg.tar.zst" ]
 
+    # The pipeline runs the suites and the workflow from the checkout, never
+    # from the tag, so a change to either is not the divergence the guard is
+    # for. A package that installs out of one of those directories is reading
+    # it from the tag after all, and then it counts again.
+    mkdir -p "$work/test/hello" "$work/.github/workflows"
+    printf 'echo hi\n' > "$work/test/hello/run.sh"
+    printf 'name: ci\n' > "$work/.github/workflows/ci.yml"
+    git -C "$work" add test .github
+    git -C "$work" -c user.name=harness -c user.email=harness@shedos.invalid \
+        commit -qm 'add a suite and a workflow'
+
+    rm -rf "$work/dist"
+    build_package "$work" 'file:///nonexistent' SHEDOS_PKGREL_PUSH=true
+    check 'a suite and a workflow moving past the tag is not lag' \
+        [ -f "$work/dist/shedos-ci-hello-1-2-any.pkg.tar.zst" ]
+    check 'and the build does not ask for a re-cut' \
+        not grep -qF 're-cut the tag' "$work/build.log"
+
+    rm -rf "$work/dist"
+    build_package "$work" 'file:///nonexistent'
+    check 'the notice reads the same tree the guard did' \
+        grep -qF 'builds from tag 1, which is this checkout' "$work/build.log"
+
+    # Named by the PKGBUILD, so it is consumed from the tag like anything else.
+    printf 'package() { install -Dm644 test/hello/run.sh "$pkgdir/usr/share/hello"; }\n' \
+        >> "$work/PKGBUILD"
+    printf 'echo hello\n' > "$work/test/hello/run.sh"
+    git -C "$work" -c user.name=harness -c user.email=harness@shedos.invalid \
+        commit -qam 'install out of the suite directory'
+    rm -rf "$work/dist"
+    build_package "$work" 'file:///nonexistent' SHEDOS_PKGREL_PUSH=true
+    check 'a suite the PKGBUILD installs from counts again' \
+        grep -qF 're-cut the tag' "$work/build.log"
+    check 'and the suite path is what it names' \
+        grep -qF 'test/hello/run.sh' "$work/build.log"
+
+    # Back to a level tag for the cases below.
+    git -C "$work" checkout -q HEAD~1 -- PKGBUILD test
+    git -C "$work" -c user.name=harness -c user.email=harness@shedos.invalid \
+        commit -qam 'stop installing out of the suite directory'
+    git -C "$work" -c tag.gpgsign=false tag -f 1 >/dev/null
+    git -C "$work" push -qf origin refs/tags/1
+
     printf 'new payload\n' > "$work/payload.txt"
     git -C "$work" add payload.txt
     git -C "$work" -c user.name=harness -c user.email=harness@shedos.invalid \
