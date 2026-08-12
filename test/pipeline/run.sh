@@ -667,6 +667,44 @@ case_source_tag_guard() {
         grep -qF 'cannot read tag 1' "$work/build.log"
 }
 
+# --- case: an exempt root is matched by the name it has. `.github` is read as
+# an expression, where the dot stands for any character, so a PKGBUILD naming a
+# directory spelled the same way but for that one used to read as a PKGBUILD
+# naming the workflow directory — and the exemption quietly went away.
+case_exempt_root_name() {
+    local work
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' RETURN
+
+    fixture_repo "$work"
+
+    {
+        cat "$fixture/PKGBUILD"
+        printf 'source=("git+file://%s#tag=$pkgver")\n' "$fixture_remote"
+        printf "sha256sums=('SKIP')\n"
+        printf '# The generated payload lands in xgithub/ before this builds.\n'
+    } > "$work/PKGBUILD"
+    git -C "$work" add PKGBUILD
+    git -C "$work" -c user.name=harness -c user.email=harness@shedos.invalid \
+        commit -qm 'name a directory spelled like the workflow one'
+    git -C "$work" push -q origin main
+    git -C "$work" -c tag.gpgsign=false tag 1
+    git -C "$work" push -q origin refs/tags/1
+
+    mkdir -p "$work/.github/workflows"
+    printf 'name: ci\n' > "$work/.github/workflows/ci.yml"
+    git -C "$work" add .github
+    git -C "$work" -c user.name=harness -c user.email=harness@shedos.invalid \
+        commit -qm 'add a workflow'
+
+    rm -rf "$work/dist"
+    build_package "$work" 'file:///nonexistent' SHEDOS_PKGREL_PUSH=true
+    check 'a name the exempt root only resembles leaves the exemption alone' \
+        [ -f "$work/dist/shedos-ci-hello-1-1-any.pkg.tar.zst" ]
+    check 'and the build does not ask for a re-cut' \
+        not grep -qF 're-cut the tag' "$work/build.log"
+}
+
 # --- case: over HTTP an absent staging DB arrives as a 404, and that is still
 # the first-publish path.
 case_staging_db_404() {
@@ -1045,7 +1083,7 @@ for case in case_build case_pkgrel_guard case_pkgrel_push_withheld \
            case_pkgrel_remote_unreadable \
            case_push_gate_matches_publish case_decimal_pkgrel \
            case_pkgrel_literal_match case_makepkg_argv case_build_options \
-           case_shedos_channels case_source_tag_guard \
+           case_shedos_channels case_source_tag_guard case_exempt_root_name \
            case_staging_db_404 case_staging_db_unusable case_payload \
            case_payload_build_failure case_rollup_all_pass \
            case_rollup_failure case_rollup_no_suites case_rollup_skip \
