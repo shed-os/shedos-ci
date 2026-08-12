@@ -279,6 +279,25 @@ case_outside_the_contract() {
     check 'and the undeclared verb is now a failure' says 'alpha'
 }
 
+# --- case: two declarations in one package claiming one verb -----------------
+
+case_collision_within_package() {
+    local work
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' RETURN
+    mkdir -p "$work/twice"
+    declare_verb "$work/twice" alpha.toml \
+        'name = "alpha"' 'package = "twice"' 'man = "alpha.1"' 'description = "a verb"'
+    declare_verb "$work/twice" also-alpha.toml \
+        'name = "alpha"' 'package = "twice"' 'man = "alpha.1"' 'description = "the same verb"'
+    build_pkg "$work" twice '' 'alpha' 'alpha.toml also-alpha.toml' 'alpha.1' || return 1
+
+    run_check "$built"
+    check 'one name claimed twice in one package fails the check' [ "$rc" -ne 0 ]
+    check 'it names the verb' says 'alpha'
+    check 'and both declarations' says 'also-alpha.toml'
+}
+
 # --- case: several packages are all reported, not just the first -------------
 
 case_reports_every_package() {
@@ -303,7 +322,7 @@ case_reports_every_package() {
 for c in case_complete_package case_undeclared_verb case_declaration_without_verb \
          case_declaration_without_man case_declaration_incomplete \
          case_verb_without_completions case_verb_with_no_flags \
-         case_internal_verb case_no_verbs \
+         case_internal_verb case_no_verbs case_collision_within_package \
          case_outside_the_contract case_reports_every_package; do
     printf '\n── %s\n' "${c#case_}"
     "$c" || { fail=$((fail + 1)); failed+=("${c#case_}"); printf '  FAIL %s (harness)\n' "${c#case_}"; }
