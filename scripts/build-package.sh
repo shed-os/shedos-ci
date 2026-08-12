@@ -104,9 +104,12 @@ pkgbuild_source_tag() {
 # tag after all, and then it is not exempt. The match is on the directory name
 # as a whole path component, so a `latest/` in the PKGBUILD is not a `test/`.
 checkout_owned_roots() {
-    local dir=$1 root
+    local dir=$1 root pattern
     for root in test .github; do
-        grep -qE "(^|[^A-Za-z0-9_.-])$root/" "$dir/PKGBUILD" || printf '%s\n' "$root"
+        # The name goes into an ERE, so its dots are escaped: .github must not
+        # match "signature/" through a wildcard and quietly stop exempting it.
+        pattern=${root//./\\.}
+        grep -qE "(^|[^A-Za-z0-9_.-])$pattern/" "$dir/PKGBUILD" || printf '%s\n' "$root"
     done
 }
 
