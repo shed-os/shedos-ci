@@ -98,23 +98,15 @@ pkgbuild_source_tag() {
     )
 }
 
-# A source pinned to a tag is built from the tag, never from the checkout the
-# PKGBUILD sits in. A change that lands on the branch with the tag left where it
-# was builds green and publishes the old tree — a release nobody can tell apart
-# from the one they asked for. So the build that publishes says so and stops.
-#
-# The PKGBUILD and its install scriptlet are the exception, because makepkg
-# reads both from the checkout: the pkgrel guard's own bump moves the PKGBUILD
-# every time and it is not lag.
-guard_source_tag() {
-    local dir=$1 pkgname=$2 tag=$3
+# Where the checkout differs from the tag the build will use, one path per line.
+# The PKGBUILD and its install scriptlet never count, because makepkg reads both
+# from the checkout: the pkgrel guard's own bump moves the PKGBUILD every time
+# and it is not lag. Exit 1 means the tag could not be read at all.
+source_tag_divergence() {
+    local dir=$1 tag=$2
     local prefix install_file path
-    local -a lagging=()
 
-    if ! git -C "$dir" fetch --quiet "$PUSH_REMOTE" "refs/tags/$tag" 2> /dev/null; then
-        echo "$pkgname cannot read tag $tag from $PUSH_REMOTE" >&2
-        exit 1
-    fi
+    git -C "$dir" fetch --quiet "$PUSH_REMOTE" "refs/tags/$tag" 2> /dev/null || return 1
 
     prefix=$(git -C "$dir" rev-parse --show-prefix)
     install_file=$(pkgbuild_field "$dir" install)
@@ -124,12 +116,54 @@ guard_source_tag() {
         path=${path#"$prefix"}
         [[ $path == PKGBUILD ]] && continue
         [[ -n $install_file && $path == "$install_file" ]] && continue
-        lagging+=("$path")
+        printf '%s\n' "$path"
     done < <(git -C "$dir" diff --name-only FETCH_HEAD HEAD -- .)
+}
+
+# A source pinned to a tag is built from the tag, never from the checkout the
+# PKGBUILD sits in. A change that lands on the branch with the tag left where it
+# was builds green and publishes the old tree — a release nobody can tell apart
+# from the one they asked for. So the build that publishes says so and stops.
+guard_source_tag() {
+    local dir=$1 pkgname=$2 tag=$3
+    local -a lagging=()
+    local moved
+
+    # Captured rather than piped: a process substitution reports the exit
+    # status of the reader, so a tag that could not be read would look like a
+    # tag nothing had moved past.
+    if ! moved=$(source_tag_divergence "$dir" "$tag"); then
+        echo "$pkgname cannot read tag $tag from $PUSH_REMOTE" >&2
+        exit 1
+    fi
+    [[ -z $moved ]] || mapfile -t lagging <<<"$moved"
 
     if (( ${#lagging[@]} > 0 )); then
         echo "$pkgname builds from tag $tag but ${lagging[*]} moved since — re-cut the tag" >&2
         exit 1
+    fi
+}
+
+# The same question asked of a build that publishes nothing, which is the only
+# lane the guard above is off in. Its answer is printed and never enforced: a
+# pull request cannot tag what it has not merged, so lag is not its fault. But a
+# green run that never said which tree it built is how a change gets read as
+# tested when the tag was built in its place.
+note_source_tag() {
+    local dir=$1 pkgname=$2 tag=$3
+    local -a lagging=()
+    local moved
+
+    if ! moved=$(source_tag_divergence "$dir" "$tag"); then
+        echo "$pkgname builds from tag $tag, which $PUSH_REMOTE does not carry"
+        return 0
+    fi
+    [[ -z $moved ]] || mapfile -t lagging <<<"$moved"
+
+    if (( ${#lagging[@]} > 0 )); then
+        echo "$pkgname builds from tag $tag and this checkout differs at: ${lagging[*]}"
+    else
+        echo "$pkgname builds from tag $tag, which is this checkout"
     fi
 }
 
@@ -281,8 +315,12 @@ for dir in "${dirs[@]}"; do
     # the bump is: is this the build whose packages get published. A pull
     # request cannot tag what it has not merged and publishes nothing.
     source_tag=$(pkgbuild_source_tag "$dir")
-    if [[ -n $source_tag && $PUSH_BUMP == true ]]; then
-        guard_source_tag "$dir" "$pkgname" "$source_tag"
+    if [[ -n $source_tag ]]; then
+        if [[ $PUSH_BUMP == true ]]; then
+            guard_source_tag "$dir" "$pkgname" "$source_tag"
+        else
+            note_source_tag "$dir" "$pkgname" "$source_tag"
+        fi
     fi
 
     guard_pkgrel "$dir" "$pkgname" "$pkgver" "$pkgrel"

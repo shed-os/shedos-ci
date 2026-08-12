@@ -45,8 +45,11 @@ tree. Before anything else, the build that publishes compares the tag against
 `HEAD` for each package directory and stops if they have parted, naming the tag
 and the paths that moved. The PKGBUILD and its install scriptlet are excluded
 because makepkg reads both from the checkout: the pkgrel bump moves the PKGBUILD
-on every republish and that is not lag. A pull request is not checked — it
-cannot tag what it has not merged, and it publishes nothing.
+on every republish and that is not lag. A pull request is not stopped — it cannot
+tag what it has not merged, and it publishes nothing — but it is told: a build
+with nothing to publish prints which tag it built and where the checkout differs
+from it, or says the two are the same. Without that line a green pull-request
+run reads as evidence about the branch when what was built was the tag.
 
 **test** — takes the build's artifact and holds every package in it to
 shedman's verb contract, then `scripts/run-tests.sh` runs every `test/*/run.sh`
