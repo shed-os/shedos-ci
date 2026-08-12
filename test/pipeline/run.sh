@@ -558,6 +558,14 @@ case_source_tag_guard() {
     check 'a tag level with the checkout builds' \
         [ -f "$work/dist/shedos-ci-hello-1-1-any.pkg.tar.zst" ]
 
+    # The same build with nothing to publish has its guard off, so it says
+    # which tree it built instead — a green run that never mentioned the tag
+    # is how a change gets read as tested when the tag was built instead.
+    rm -rf "$work/dist"
+    build_package "$work" 'file:///nonexistent'
+    check 'a build that publishes nothing says the tag matched' \
+        grep -qF 'builds from tag 1, which is this checkout' "$work/build.log"
+
     # Only the PKGBUILD moves, which the build reads from the checkout and never
     # from the tag — the pkgrel guard's own bump takes exactly this shape.
     sed -i 's/^pkgrel=.*/pkgrel=2/' "$work/PKGBUILD"
@@ -586,6 +594,12 @@ case_source_tag_guard() {
     build_package "$work" 'file:///nonexistent'
     check 'a build that publishes nothing is not stopped by lag' \
         [ -f "$work/dist/shedos-ci-hello-1-2-any.pkg.tar.zst" ]
+    check 'but it names the tag it built instead' \
+        grep -qF 'builds from tag 1 and this checkout differs at' "$work/build.log"
+    check 'and the path that is not in it' \
+        grep -qF 'payload.txt' "$work/build.log"
+    check 'and it is a notice rather than a refusal' \
+        not grep -qF 're-cut the tag' "$work/build.log"
 
     # A commit pin names one immutable tree, so there is no lag to have.
     sed -i 's/#tag=\$pkgver/#commit=HEAD/' "$work/PKGBUILD"
