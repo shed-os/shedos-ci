@@ -11,8 +11,10 @@
 #   * every declaration names an executable the package ships
 #   * every declaration carries name, package, man and description
 #   * every declaration's man page is one the package ships
-#   * every verb whose name is not internal answers --complete-bash, zsh and
-#     fish with something, because that is what the completers ask it
+#   * every verb whose name is not internal exits clean on --complete-bash,
+#     --complete-zsh and --complete-fish, because that is what the completers
+#     ask it. A verb with no flags answers with nothing and that is an answer;
+#     one that errors or hangs leaves the completer with a broken tab key
 #
 # A package is under the contract once it says so: it ships a declaration, it
 # depends on shedman, or it is shedman. One that ships a verb without ever
@@ -98,8 +100,8 @@ check_package() {
         [[ $name == _* ]] && continue
         local mode
         for mode in --complete-bash --complete-zsh --complete-fish; do
-            if ! timeout 30 "$root/$LIBEXEC/$name" "$mode" 2>/dev/null | grep -q .; then
-                report "$name answers nothing to $mode"
+            if ! timeout 30 "$root/$LIBEXEC/$name" "$mode" > /dev/null 2>&1; then
+                report "$name does not answer $mode"
             fi
         done
     done

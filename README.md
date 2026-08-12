@@ -74,9 +74,11 @@ artifact answers: a verb reaches a machine because a declaration under
 how a green-tested verb used to stay behind. Every executable in
 `/usr/libexec/shedman` has to be declared, every declaration has to name an
 executable, a man page the package ships, its owning package and what it does,
-and every verb that is not an internal `_helper` has to answer
-`--complete-bash`, `--complete-zsh` and `--complete-fish` — which is why this
-runs in the test job, where the caller's `test_packages` are installed and the
+and every verb that is not an internal `_helper` has to exit clean on
+`--complete-bash`, `--complete-zsh` and `--complete-fish`. A verb with no flags
+answers with nothing and that is an answer; one that errors or hangs leaves the
+completer with a broken tab key. Starting a verb is what makes this the test
+job's work, where the caller's `test_packages` are installed and the
 verbs can start.
 
 A package joins the contract by saying so: it ships a declaration, it depends
@@ -267,8 +269,8 @@ the assertion is what keeps that from being found in production.
 `bash test/verb-contract/run.sh` builds a package per case with makepkg and
 hands it to the contract check: a verb with no declaration, a declaration with
 no verb, one naming a man page the package never shipped, one missing a field,
-a verb that refuses a completion mode, an internal verb that is not asked, a
-package with no verbs at all, and one shipping a verb from outside the contract
+a verb that refuses a completion mode, one with nothing to complete, an
+internal verb that is not asked, a package with no verbs at all, and one shipping a verb from outside the contract
 before and after it declares the dependency that joins it.
 
 `.github/workflows/ci.yml` runs both harnesses and parses every workflow file on

@@ -37,6 +37,7 @@ case "\${1:-}" in
     --help-summary) echo "a fixture verb" ;;
     --complete-bash|--complete-zsh|--complete-fish)
         [[ "\$1" == "--$skip" ]] && exit 1
+        [[ "$skip" == silent ]] && exit 0
         printf '%s\n' --alpha -a ;;
     *) echo invoked ;;
 esac
@@ -210,6 +211,23 @@ case_verb_without_completions() {
     check 'it names the mode' says '--complete-fish'
 }
 
+# --- case: a verb with no flags answers with nothing, which is an answer -----
+
+case_verb_with_no_flags() {
+    local work
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' RETURN
+    mkdir -p "$work/flagless"
+    declare_verb "$work/flagless" alpha.toml \
+        'name = "alpha"' 'package = "flagless"' 'man = "alpha.1"' 'description = "a verb"'
+    build_pkg "$work" flagless '' 'alpha:silent' 'alpha.toml' 'alpha.1' || return 1
+
+    run_check "$built"
+    check 'a verb with nothing to complete still passes' [ "$rc" -eq 0 ]
+    [[ $rc -eq 0 ]] || printf '%s\n' "$out"
+}
+
+
 # --- case: an internal verb is not asked for completions ---------------------
 
 case_internal_verb() {
@@ -284,7 +302,8 @@ case_reports_every_package() {
 
 for c in case_complete_package case_undeclared_verb case_declaration_without_verb \
          case_declaration_without_man case_declaration_incomplete \
-         case_verb_without_completions case_internal_verb case_no_verbs \
+         case_verb_without_completions case_verb_with_no_flags \
+         case_internal_verb case_no_verbs \
          case_outside_the_contract case_reports_every_package; do
     printf '\n── %s\n' "${c#case_}"
     "$c" || { fail=$((fail + 1)); failed+=("${c#case_}"); printf '  FAIL %s (harness)\n' "${c#case_}"; }
