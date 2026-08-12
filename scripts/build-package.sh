@@ -98,24 +98,43 @@ pkgbuild_source_tag() {
     )
 }
 
+# Directories this pipeline reads from the checkout rather than from the tag:
+# the suites it runs and the workflow that is running. Derived rather than
+# assumed — a PKGBUILD that installs out of one of them is reading it from the
+# tag after all, and then it is not exempt. The match is on the directory name
+# as a whole path component, so a `latest/` in the PKGBUILD is not a `test/`.
+checkout_owned_roots() {
+    local dir=$1 root
+    for root in test .github; do
+        grep -qE "(^|[^A-Za-z0-9_.-])$root/" "$dir/PKGBUILD" || printf '%s\n' "$root"
+    done
+}
+
 # Where the checkout differs from the tag the build will use, one path per line.
 # The PKGBUILD and its install scriptlet never count, because makepkg reads both
 # from the checkout: the pkgrel guard's own bump moves the PKGBUILD every time
-# and it is not lag. Exit 1 means the tag could not be read at all.
+# and it is not lag. Neither do the directories above, for the same reason —
+# and without that, a package whose pkgver is pinned to the monolith's has no
+# way to answer a test-only refusal, because a new tag name means a new pkgver
+# means a parity failure. Exit 1 means the tag could not be read at all.
 source_tag_divergence() {
     local dir=$1 tag=$2
-    local prefix install_file path
+    local prefix install_file path root exempt
 
     git -C "$dir" fetch --quiet "$PUSH_REMOTE" "refs/tags/$tag" 2> /dev/null || return 1
 
     prefix=$(git -C "$dir" rev-parse --show-prefix)
     install_file=$(pkgbuild_field "$dir" install)
+    mapfile -t exempt < <(checkout_owned_roots "$dir")
 
     while IFS= read -r path; do
         [[ -n $path ]] || continue
         path=${path#"$prefix"}
         [[ $path == PKGBUILD ]] && continue
         [[ -n $install_file && $path == "$install_file" ]] && continue
+        for root in "${exempt[@]}"; do
+            [[ $path == "$root"/* ]] && continue 2
+        done
         printf '%s\n' "$path"
     done < <(git -C "$dir" diff --name-only FETCH_HEAD HEAD -- .)
 }
