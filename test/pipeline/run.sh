@@ -667,6 +667,48 @@ case_source_tag_guard() {
         grep -qF 'cannot read tag 1' "$work/build.log"
 }
 
+# --- case: the build is dated from the commit it builds rather than from the
+# clock. scdoc stamps SOURCE_DATE_EPOCH's date into every man page's .TH line,
+# so two builds of one tag either side of midnight ship different bytes.
+case_source_date_epoch() {
+    local work argv_lines tagged=1700000000 later=1800000000
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' RETURN
+
+    fixture_repo "$work"
+
+    {
+        cat "$fixture/PKGBUILD"
+        printf 'source=("git+file://%s#tag=$pkgver")\n' "$fixture_remote"
+        printf "sha256sums=('SKIP')\n"
+    } > "$work/PKGBUILD"
+    git -C "$work" add PKGBUILD
+    GIT_AUTHOR_DATE="@$tagged" GIT_COMMITTER_DATE="@$tagged" \
+        git -C "$work" -c user.name=harness -c user.email=harness@shedos.invalid \
+        commit -qm 'build from the tag'
+    git -C "$work" push -q origin main
+    git -C "$work" -c tag.gpgsign=false tag 1
+    git -C "$work" push -q origin refs/tags/1
+
+    local -a got
+    mapfile -t got < <(dry_run_argv "$work" "$(id -un)")
+    argv_lines=$(printf '%s\n' "${got[@]}")
+    check 'the build is stamped with the date of the commit it builds' \
+        grep -qx "SOURCE_DATE_EPOCH=$tagged" <<<"$argv_lines"
+
+    # The pkgrel guard commits its bump while the build runs, so a stamp taken
+    # from the checkout would be taken from the clock after all.
+    sed -i 's/^pkgrel=.*/pkgrel=2/' "$work/PKGBUILD"
+    GIT_AUTHOR_DATE="@$later" GIT_COMMITTER_DATE="@$later" \
+        git -C "$work" -c user.name=harness -c user.email=harness@shedos.invalid \
+        commit -qam 'bump the release'
+
+    mapfile -t got < <(dry_run_argv "$work" "$(id -un)")
+    argv_lines=$(printf '%s\n' "${got[@]}")
+    check 'a commit past the tag does not redate the build' \
+        grep -qx "SOURCE_DATE_EPOCH=$tagged" <<<"$argv_lines"
+}
+
 # --- case: an exempt root is matched by the name it has. `.github` is read as
 # an expression, where the dot stands for any character, so a PKGBUILD naming a
 # directory spelled the same way but for that one used to read as a PKGBUILD
@@ -1083,7 +1125,8 @@ for case in case_build case_pkgrel_guard case_pkgrel_push_withheld \
            case_pkgrel_remote_unreadable \
            case_push_gate_matches_publish case_decimal_pkgrel \
            case_pkgrel_literal_match case_makepkg_argv case_build_options \
-           case_shedos_channels case_source_tag_guard case_exempt_root_name \
+           case_shedos_channels case_source_tag_guard case_source_date_epoch \
+           case_exempt_root_name \
            case_staging_db_404 case_staging_db_unusable case_payload \
            case_payload_build_failure case_rollup_all_pass \
            case_rollup_failure case_rollup_no_suites case_rollup_skip \
