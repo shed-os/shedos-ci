@@ -281,16 +281,34 @@ MAKEFLAGS="-j$(nproc)"
 EOF
 }
 
+# The date a build stamps into what it renders. scdoc writes it into every man
+# page's .TH line, so without one the same release built either side of
+# midnight is different bytes. It comes from the commit the package is built
+# from — the tag when the source pins one, the checkout otherwise — so a
+# rebuild of a release matches the release however long after it runs.
+build_epoch=""
+commit_epoch() {
+    local dir=$1 tag=$2 rev=HEAD
+    if [[ -n $tag ]] \
+        && git -C "$dir" fetch --quiet "$PUSH_REMOTE" "refs/tags/$tag" 2> /dev/null; then
+        rev=FETCH_HEAD
+    fi
+    # A package directory outside a repository has no commit to be dated from,
+    # and answering with the clock is the whole thing being avoided here.
+    git -C "$dir" log -1 --format=%ct "$rev" 2> /dev/null || return 0
+}
+
 # NUL-separated, so the dry run and the real one see the same argv. PKGDEST
 # pins the output next to the PKGBUILD whatever the host makepkg.conf says, and
 # MAKEPKG_CONF names the config the options above were written beside — sudo
 # would drop it otherwise.
 makepkg_argv() {
     local dir=$1
-    local -a cmd=()
+    local -a cmd=() stamp=()
     [[ $BUILD_USER == "$(id -un)" ]] || cmd=(sudo -u "$BUILD_USER")
+    [[ -z $build_epoch ]] || stamp=("SOURCE_DATE_EPOCH=$build_epoch")
     # shellcheck disable=SC2016  # $1 is the inner bash's argument, not ours
-    cmd+=(env "PKGDEST=$dir" "MAKEPKG_CONF=$MAKEPKG_CONF" \
+    cmd+=(env "${stamp[@]}" "PKGDEST=$dir" "MAKEPKG_CONF=$MAKEPKG_CONF" \
         bash -c 'cd "$1" && makepkg --syncdeps --noconfirm --force' _ "$dir")
     printf '%s\0' "${cmd[@]}"
 }
@@ -313,6 +331,7 @@ fi
 if [[ -n ${SHEDOS_DRY_RUN:-} ]]; then
     for dir in "${dirs[@]}"; do
         dir=$(cd -- "$dir" && pwd)
+        build_epoch=$(commit_epoch "$dir" "$(pkgbuild_source_tag "$dir")")
         mapfile -t -d '' cmd < <(makepkg_argv "$dir")
         printf 'argv: %s\n' "${cmd[@]}"
     done
@@ -344,6 +363,10 @@ for dir in "${dirs[@]}"; do
             note_source_tag "$dir" "$pkgname" "$source_tag"
         fi
     fi
+
+    # Before the pkgrel guard too: its bump is a commit made while the build
+    # runs, and dating the package from that one is dating it from the clock.
+    build_epoch=$(commit_epoch "$dir" "$source_tag")
 
     guard_pkgrel "$dir" "$pkgname" "$pkgver" "$pkgrel"
     run_makepkg "$dir"
