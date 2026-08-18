@@ -1221,6 +1221,113 @@ case_rollup_test_env() {
     check 'a line that is not an assignment stops the run' [ "$rollup_rc" -ne 0 ]
 }
 
+# Runs the dependency install against a stubbed pacman and a two-entry
+# mirrorlist. $2 and $3 say whether each mirror's database still names the
+# releases the pool behind it carries, which is the thing the real mirrors
+# disagree about. Leaves the calls in $work/probe.log.
+install_stubs() {
+    local work=$1 first=$2 second=$3
+    mkdir -p "$work/bin" "$work/db"
+    cat > "$work/bin/pacman" <<'STUB'
+#!/bin/sh
+printf 'pacman %s\n' "$*" >> "$PROBE_LOG"
+case " $* " in
+    *' -Sy'*) ;;
+    *) printf 'stub: resolved against a database it never refreshed\n' >&2
+       exit 3 ;;
+esac
+mirror=$(sed -n 's/^Server = //p' "$STUB_MIRRORLIST" | head -1)
+if [ "$(cat "$STUB_DB_DIR/$mirror")" != fresh ]; then
+    printf "error: failed retrieving file 'hello-1-1-x86_64.pkg.tar.zst" >&2
+    printf "' from %s : The requested URL returned error: 404\n" "$mirror" >&2
+    exit 1
+fi
+printf 'installed\n'
+STUB
+    chmod +x "$work/bin/pacman"
+    printf 'Server = first-mirror\nServer = second-mirror\n' > "$work/mirrorlist"
+    printf '%s\n' "$first" > "$work/db/first-mirror"
+    printf '%s\n' "$second" > "$work/db/second-mirror"
+    : > "$work/probe.log"
+}
+
+# The stub reads the mirrorlist through its own variable, so what it sees is
+# whatever the script under test left behind rather than anything the case
+# told it. Sets install_out and install_rc.
+install_out=""
+install_rc=0
+run_install() {
+    local work=$1
+    shift
+    install_out=$(
+        PATH="$work/bin:$PATH" \
+        PROBE_LOG="$work/probe.log" \
+        STUB_MIRRORLIST="$work/mirrorlist" \
+        STUB_DB_DIR="$work/db" \
+        SHEDOS_MIRRORLIST="$work/mirrorlist" \
+            bash "$repo_root/scripts/install-packages.sh" "$@" 2>&1
+    )
+    install_rc=$?
+}
+
+# --- case: a mirror can hand out a package database for hours after the pool
+# behind it dropped the releases that database names, and every mirror answers
+# 404 for a release Arch has stopped carrying. Asking the same host again
+# returns the same database — two runs seven minutes apart both resolved the
+# same dead version — so the install has to come back from a different mirror
+# or a green pipeline is a coin toss.
+case_install_packages() {
+    local work rc
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' RETURN
+
+    [[ -f $repo_root/scripts/install-packages.sh ]] || {
+        printf '  FAIL scripts/install-packages.sh is missing\n'
+        return 1
+    }
+
+    # The shape the pipeline shipped: one transaction, nowhere to go when the
+    # database it resolved against names a file no mirror has.
+    install_stubs "$work" stale fresh
+    local bare
+    bare=$(
+        PATH="$work/bin:$PATH" PROBE_LOG="$work/probe.log" \
+        STUB_MIRRORLIST="$work/mirrorlist" STUB_DB_DIR="$work/db" \
+            pacman -Syu --needed --noconfirm hello 2>&1
+    )
+    rc=$?
+    check 'a single transaction dies on the held database' [ "$rc" -ne 0 ]
+    check 'and the 404 is what it dies on' \
+        grep -qF 'returned error: 404' <<<"$bare"
+
+    install_stubs "$work" stale fresh
+    run_install "$work" hello
+    check 'a held database does not fail the job' [ "$install_rc" -eq 0 ]
+    check 'the first transaction refreshes before it resolves' \
+        [ "$(head -1 "$work/probe.log")" = 'pacman -Syu --needed --noconfirm hello' ]
+    check 'the retry forces the database back down' \
+        [ "$(sed -n 2p "$work/probe.log")" = 'pacman -Syyu --needed --noconfirm hello' ]
+    check 'and takes it from the other mirror' \
+        [ "$(sed -n 's/^Server = //p' "$work/mirrorlist" | head -1)" = second-mirror ]
+    check 'the mirror that worked ends the run' \
+        [ "$(wc -l < "$work/probe.log")" -eq 2 ]
+
+    install_stubs "$work" stale stale
+    run_install "$work" hello
+    check 'no mirror left to try fails the job' [ "$install_rc" -ne 0 ]
+    check 'the run is bounded by the mirrors it has' \
+        [ "$(wc -l < "$work/probe.log")" -eq 2 ]
+    check 'and pacman gets the last word' \
+        grep -qF 'returned error: 404' <<<"$install_out"
+
+    install_stubs "$work" fresh stale
+    run_install "$work" hello
+    check 'a mirror that serves costs one transaction' \
+        [ "$(wc -l < "$work/probe.log")" -eq 1 ]
+    check 'and leaves the list in the order it found it' \
+        [ "$(sed -n 's/^Server = //p' "$work/mirrorlist" | head -1)" = first-mirror ]
+}
+
 # --- case: without the dispatch secret the publish must stop and say so.
 case_missing_secret() {
     local work
@@ -1257,7 +1364,7 @@ for case in case_build case_pkgrel_guard case_pkgrel_push_withheld \
            case_rollup_failure case_rollup_no_suites case_rollup_skip \
            case_rollup_root_lane case_rollup_allowed_skip \
            case_rollup_disallowed_skip case_rollup_test_env \
-           case_missing_secret; do
+           case_install_packages case_missing_secret; do
     printf '════════ %s ════════\n' "${case#case_}"
     if ! "$case"; then
         fail=$((fail + 1))

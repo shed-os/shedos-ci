@@ -14,17 +14,20 @@ jobs:
     container:
       image: archlinux:latest
     steps:
+      # Before the install, which is one of the scripts this checkout carries.
+      # With no git in the image yet, the action falls back to the REST API
+      # tarball, which is the same fallback the reusable workflow leans on.
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
       - name: Install test dependencies
         run: |
-          pacman -Syu --noconfirm
-          pacman -S --needed --noconfirm base-devel git sudo jq curl python python-yaml
+          bash scripts/install-packages.sh \
+              base-devel git sudo jq curl python python-yaml
           # archlinux:latest ships an empty keyring; populate it for makepkg.
           pacman-key --init
           pacman-key --populate archlinux
           # The harness builds a real package, and makepkg refuses to run as root.
           useradd -m tester
-
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Trust workspace for git
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"

@@ -140,6 +140,17 @@ call are the versions the harness tests against: on the bare runner this job
 found a `jq` a major version behind, and a program that compiled everywhere
 else was a syntax error under it.
 
+All three install their dependencies through `scripts/install-packages.sh`,
+which is why the pipeline scripts are checked out before anything is installed.
+A mirror can go on handing out a package database for hours after the pool
+behind it dropped the releases that database names, and pacman then resolves a
+version every mirror answers 404 for. Asking the same host again returns the
+same database, so a failed transaction is retried against the next mirror in
+`/etc/pacman.d/mirrorlist` with the database forced back down. When the list
+runs out the job fails with what pacman said. Refresh, upgrade and install are
+one transaction, because installing against a database older than the system
+underneath it is the partial upgrade Arch does not support.
+
 ## Build parity
 
 Before anything is built, `scripts/build-package.sh` writes a makepkg drop-in
@@ -259,6 +270,14 @@ refuses a connection on loopback to separate a first publish from a broken one,
 prints the makepkg invocation for both the sudo and the direct branch without
 running either, rolls up stand-in suites that pass, fail and skip, and checks
 the dispatch body against the contract above with a stubbed `gh`.
+
+The dependency install has a stubbed `pacman` of its own, one whose answer
+depends on which mirror the list names first: the harness asserts that the
+first transaction refreshes before it resolves, that a database the mirror
+cannot serve sends the retry to the other mirror with the database forced back
+down, that a mirror which serves costs one transaction and leaves the list in
+the order it found it, and that running out of mirrors fails the job with
+pacman's own error rather than a summary of it.
 
 The fixture package repo has a bare repo as its `origin`, so the bump push is
 asserted against a real remote: one new commit on a bump, an untouched head
