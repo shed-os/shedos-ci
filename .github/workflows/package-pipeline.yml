@@ -77,10 +77,20 @@ jobs:
             -e '/^# >>> shedos-testing <<<$/,/^# <<< shedos-testing >>>$/d' \
             /etc/pacman.conf
 
+      # A reusable workflow's steps run against the caller's checkout, so the
+      # scripts this pipeline calls have to come from a second one. It comes
+      # before the install because the install is one of the scripts; with no
+      # git in the image yet, the action falls back to the REST API tarball.
+      - name: Check out the pipeline scripts
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: shed-os/shedos-ci
+          ref: ${{ inputs.ci_ref }}
+          path: .shedos-ci
+
       - name: Install build dependencies
         run: |
-          pacman -Syu --noconfirm
-          pacman -S --needed --noconfirm base-devel git sudo jq curl
+          bash .shedos-ci/scripts/install-packages.sh base-devel git sudo jq curl
           # archlinux:latest ships an empty keyring; populate it for --syncdeps.
           pacman-key --init
           pacman-key --populate archlinux
@@ -89,16 +99,9 @@ jobs:
           echo '%wheel ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/wheel
           chmod 440 /etc/sudoers.d/wheel
 
+      # After git exists, so the caller's tree is a real checkout: the pkgrel
+      # bump commits into it and pushes it back.
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-
-      # A reusable workflow's steps run against the caller's checkout, so the
-      # scripts this pipeline calls have to come from a second one.
-      - name: Check out the pipeline scripts
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          repository: shed-os/shedos-ci
-          ref: ${{ inputs.ci_ref }}
-          path: .shedos-ci
 
       - name: Trust workspace for git
         # Container uid differs from checkout owner; avoids "dubious ownership".
@@ -149,10 +152,18 @@ jobs:
             -e '/^# >>> shedos-testing <<<$/,/^# <<< shedos-testing >>>$/d' \
             /etc/pacman.conf
 
+      # Before the install, which is one of these scripts. With no git in the
+      # image yet, the action falls back to the REST API tarball.
+      - name: Check out the pipeline scripts
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: shed-os/shedos-ci
+          ref: ${{ inputs.ci_ref }}
+          path: .shedos-ci
+
       - name: Install test dependencies
         run: |
-          pacman -Syu --noconfirm
-          pacman -S --needed --noconfirm base-devel git sudo jq curl
+          bash .shedos-ci/scripts/install-packages.sh base-devel git sudo jq curl
           pacman-key --init
           pacman-key --populate archlinux
           # makepkg refuses to run as root, and a suite that only ever runs
@@ -163,13 +174,6 @@ jobs:
           chmod 440 /etc/sudoers.d/wheel
 
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-
-      - name: Check out the pipeline scripts
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          repository: shed-os/shedos-ci
-          ref: ${{ inputs.ci_ref }}
-          path: .shedos-ci
 
       - name: Trust workspace for git
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -183,7 +187,8 @@ jobs:
           TEST_PACKAGES: ${{ inputs.test_packages }}
         run: |
           read -r -a extra <<< "$TEST_PACKAGES"
-          [ ${#extra[@]} -eq 0 ] || pacman -S --needed --noconfirm "${extra[@]}"
+          [ ${#extra[@]} -eq 0 ] ||
+              bash .shedos-ci/scripts/install-packages.sh "${extra[@]}"
 
       - name: Fetch the built packages
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -218,17 +223,17 @@ jobs:
     container:
       image: archlinux:latest
     steps:
-      - name: Install dispatch dependencies
-        run: |
-          pacman -Syu --noconfirm
-          pacman -S --needed --noconfirm git github-cli jq
-
+      # Before the install, which is one of these scripts. With no git in the
+      # image yet, the action falls back to the REST API tarball.
       - name: Check out the pipeline scripts
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: shed-os/shedos-ci
           ref: ${{ inputs.ci_ref }}
           path: .shedos-ci
+
+      - name: Install dispatch dependencies
+        run: bash .shedos-ci/scripts/install-packages.sh git github-cli jq
 
       - name: Fetch the built packages
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
