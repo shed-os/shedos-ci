@@ -121,15 +121,23 @@ checkout_owned_roots() {
 # the root has to declare a workspace and the package has to hold a crate that
 # could be in one.
 workspace_root_files() {
-    local dir=$1 root file
+    local dir=$1 root declared
     root=$(git -C "$dir" rev-parse --show-toplevel) || return 0
     [[ $root != "$dir" ]] || return 0
-    grep -qx '\[workspace\]' "$root/Cargo.toml" 2> /dev/null || return 0
+    # Either side declaring a workspace arms this, and the table header is
+    # matched as a line rather than as exact text: a root manifest deleted
+    # past the tag, or a comment written after `[workspace]`, would otherwise
+    # answer the question with silence. Called after the fetch, so FETCH_HEAD
+    # is the tag.
+    # Read into one string first: `grep -q` stops at the first match, and a
+    # writer killed by that would fail the pipeline under pipefail and read as
+    # a repository with no workspace in it.
+    declared=$( { cat "$root/Cargo.toml"; git -C "$dir" show FETCH_HEAD:Cargo.toml; } 2> /dev/null )
+    grep -qE '^[[:space:]]*\[workspace\][[:space:]]*(#.*)?$' <<<"$declared" || return 0
     [[ -n $(find "$dir" -name Cargo.toml -print -quit) ]] || return 0
-    for file in Cargo.toml Cargo.lock; do
-        [[ -f $root/$file ]] && printf '%s\n' "$file"
-    done
-    return 0
+    # Named whether or not they are here now. A lock the checkout deleted is a
+    # difference the diff can only report if it is asked about the path.
+    printf '%s\n' Cargo.toml Cargo.lock
 }
 
 # Where the checkout differs from the tag the build will use, one path per line.

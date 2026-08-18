@@ -825,6 +825,51 @@ case_workspace_root_guard() {
     build_packages "$work" 'file:///nonexistent' '["beta"]' SHEDOS_PKGREL_PUSH=true
     check 'while the member that changed is still lagging' \
         grep -qF 'src/main.rs' "$work/build.log"
+
+    # Three ways the root scope could answer with silence, each of which reads
+    # like a level tag and is not one. The tag is brought level first every
+    # time, so what the build reports is the change made after it.
+    level_tag() {
+        git -C "$work" -c user.name=harness -c user.email=harness@shedos.invalid \
+            commit -qam "$1"
+        git -C "$work" push -q origin main
+        git -C "$work" -c tag.gpgsign=false tag -f 1 > /dev/null
+        git -C "$work" push -qf origin refs/tags/1
+    }
+
+    printf '[workspace]  # the members this repository builds\nmembers = ["alpha", "beta"]\n' \
+        > "$work/Cargo.toml"
+    level_tag 'write a comment after the workspace header'
+    printf 'version = 4\nnothing = "moved"\n' > "$work/Cargo.lock"
+    git -C "$work" -c user.name=harness -c user.email=harness@shedos.invalid \
+        commit -qam 'change the lock'
+
+    rm -rf "$work/dist"
+    build_packages "$work" 'file:///nonexistent' '["alpha"]' SHEDOS_PKGREL_PUSH=true
+    check 'a comment after the workspace header does not disarm the root scope' \
+        grep -qF '../Cargo.lock' "$work/build.log"
+
+    git -C "$work" checkout -q HEAD~1 -- Cargo.lock
+    level_tag 'put the lock back'
+    git -C "$work" rm -q Cargo.lock
+    git -C "$work" -c user.name=harness -c user.email=harness@shedos.invalid \
+        commit -qm 'delete the lock'
+
+    rm -rf "$work/dist"
+    build_packages "$work" 'file:///nonexistent' '["alpha"]' SHEDOS_PKGREL_PUSH=true
+    check 'a lock the checkout deleted is named rather than escaping' \
+        grep -qF '../Cargo.lock' "$work/build.log"
+
+    git -C "$work" checkout -q HEAD~1 -- Cargo.lock
+    level_tag 'put the lock back again'
+    git -C "$work" rm -q Cargo.toml
+    git -C "$work" -c user.name=harness -c user.email=harness@shedos.invalid \
+        commit -qm 'dismantle the workspace'
+
+    rm -rf "$work/dist"
+    build_packages "$work" 'file:///nonexistent' '["alpha"]' SHEDOS_PKGREL_PUSH=true
+    check 'a root manifest the checkout deleted is named too' \
+        grep -qF '../Cargo.toml' "$work/build.log"
 }
 
 # --- case: over HTTP an absent staging DB arrives as a 404, and that is still
