@@ -9,6 +9,11 @@ set -euo pipefail
 : "${GITHUB_SHA:?GITHUB_SHA is not set}"
 
 SUMS=${SHEDOS_SUMS_FILE:-dist/SHA256SUMS}
+# What tree each package was built from, written by build-package.sh. The run's
+# own sha is the commit it was triggered at, which is the parent of the build
+# whenever the pkgrel guard bumped, so the two are different facts and the
+# request carries both.
+COMMITS=${SHEDOS_BUILD_COMMITS_FILE:-dist/BUILD_COMMITS}
 
 if [[ -z ${GH_TOKEN:-} ]]; then
     echo "SHEDOS_DISPATCH_TOKEN is missing — cannot ask shedos-release to publish" >&2
@@ -23,8 +28,26 @@ fi
 payload=$(mktemp)
 trap 'rm -f "$payload"' EXIT
 
-packages=$(awk 'NF {print $1 "\t" $NF}' "$SUMS" \
-    | jq -Rn '[inputs | split("\t") | {file: .[1], sha256: .[0]}]')
+# The build commit rides beside each package rather than at the top of the
+# payload, because one run can build several packages and bump them one at a
+# time. A run with no record of them says nothing rather than guessing: the
+# field is absent and the payload is the one this has always sent.
+packages=$(awk -v commits="$COMMITS" '
+    BEGIN {
+        while ((getline line < commits) > 0) {
+            split(line, f, "\t")
+            if (f[1] != "") built[f[1]] = f[2]
+        }
+    }
+    NF {
+        file = $NF
+        name = file
+        sub(/-[^-]+-[^-]+-[^-]+\.pkg\.tar\.zst$/, "", name)
+        print file "\t" $1 "\t" (name in built ? built[name] : "")
+    }' "$SUMS" \
+    | jq -Rn '[inputs | split("\t")
+               | {file: .[0], sha256: .[1]}
+                 + (if .[2] == "" then {} else {build_sha: .[2]} end)]')
 
 # Written to a file rather than piped into gh: a jq that fails to compile the
 # program still leaves gh running on the other end of a pipe, and a broken

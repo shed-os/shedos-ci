@@ -166,11 +166,15 @@ case_build() {
 
     local listing
     listing=$(find "$work/dist" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')
-    check 'dist holds the package and SHA256SUMS' \
-        [ "$listing" = 'SHA256SUMS shedos-ci-hello-1-1-any.pkg.tar.zst ' ]
+    check 'dist holds the package, its hash and the build commit' \
+        [ "$listing" = 'BUILD_COMMITS SHA256SUMS shedos-ci-hello-1-1-any.pkg.tar.zst ' ]
 
     check 'recorded hash matches the package' \
         bash -c "cd '$work/dist' && sha256sum --quiet -c SHA256SUMS"
+
+    check 'the build commit is recorded even with no bump' \
+        [ "$(awk -F'\t' '$1 == "shedos-ci-hello" { print $2 }' \
+            "$work/dist/BUILD_COMMITS")" = "$head" ]
 }
 
 # --- case: a staging DB that already carries this pkgver-pkgrel bumps the
@@ -204,6 +208,16 @@ case_pkgrel_guard() {
 
     check 'the bumped package is what got built' \
         [ -f "$work/dist/shedos-ci-hello-1-2-any.pkg.tar.zst" ]
+
+    # The commit the run was triggered at is the parent of this one, and a
+    # release manifest pinning the parent would name a tree carrying the
+    # pkgrel before the bump.
+    check 'the build commit is recorded' [ -s "$work/dist/BUILD_COMMITS" ]
+    check 'and it is the bump rather than what came before it' \
+        [ "$(awk -F'\t' '$1 == "shedos-ci-hello" { print $2 }' \
+            "$work/dist/BUILD_COMMITS")" = "$(git -C "$work" rev-parse HEAD)" ]
+    check 'which is not the commit the build started from' \
+        [ "$(awk -F'\t' '{ print $2 }' "$work/dist/BUILD_COMMITS")" != "$head" ]
 }
 
 # --- case: only a build whose packages can be published pushes its bump, and
@@ -978,6 +992,51 @@ EOF
     check 'dispatches to shedos-release' \
         grep -qx 'repos/shed-os/shedos-release/dispatches' "$work/argv"
     check 'payload matches the frozen contract' \
+        json_equal "$work/body.json" "$work/expected.json"
+
+    # With the build commits recorded, each package carries the tree it was
+    # built from. The run's own sha stays where it was: it names the artifact
+    # and it is what the reconcile looks a build up by.
+    local built=1111111111111111111111111111111111111111
+    printf 'shedos-ci-hello\t%s\n' "$built" > "$work/dist/BUILD_COMMITS"
+    cat > "$work/expected-built.json" <<EOF
+{"event_type": "publish-request",
+ "client_payload": {"repo": "shed-os/hello", "run_id": 1, "sha": "abc",
+   "artifact": "pkg-abc",
+   "packages": [{"file": "$pkg", "sha256": "$sum", "build_sha": "$built"}]}}
+EOF
+    rc=0
+    (
+        cd "$work" || exit 1
+        PATH="$work/bin:$PATH" \
+        GH_STUB_ARGV="$work/argv" \
+        GH_STUB_BODY="$work/body.json" \
+        GH_TOKEN=stub-token \
+        GITHUB_REPOSITORY=shed-os/hello \
+        GITHUB_RUN_ID=1 \
+        GITHUB_SHA=abc \
+            bash "$repo_root/scripts/request-publish.sh"
+    ) > "$work/dispatch.log" 2>&1 || rc=$?
+    check 'the dispatch with a build commit exits clean' [ "$rc" -eq 0 ]
+    check 'and the package carries the tree it was built from' \
+        json_equal "$work/body.json" "$work/expected-built.json"
+
+    # A package the record says nothing about is sent the way it always was,
+    # rather than with an empty field standing in for an answer.
+    printf 'something-else\t%s\n' "$built" > "$work/dist/BUILD_COMMITS"
+    rc=0
+    (
+        cd "$work" || exit 1
+        PATH="$work/bin:$PATH" \
+        GH_STUB_ARGV="$work/argv" \
+        GH_STUB_BODY="$work/body.json" \
+        GH_TOKEN=stub-token \
+        GITHUB_REPOSITORY=shed-os/hello \
+        GITHUB_RUN_ID=1 \
+        GITHUB_SHA=abc \
+            bash "$repo_root/scripts/request-publish.sh"
+    ) > "$work/dispatch.log" 2>&1 || rc=$?
+    check 'a package with no recorded build is unchanged' \
         json_equal "$work/body.json" "$work/expected.json"
 }
 

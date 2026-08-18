@@ -411,6 +411,15 @@ for dir in "${dirs[@]}"; do
     build_epoch=$(commit_epoch "$dir" "$source_tag")
 
     guard_pkgrel "$dir" "$pkgname" "$pkgver" "$pkgrel"
+
+    # The tree this package is about to be built from, which is not the commit
+    # the run was triggered at whenever the guard above bumped: that bump is a
+    # commit of its own and the build happens on top of it. Recorded per
+    # package, because a repository building several bumps each of them
+    # separately and the commit moves between them.
+    printf '%s\t%s\n' "$pkgname" "$(git -C "$dir" rev-parse HEAD)" \
+        >> "$DIST/BUILD_COMMITS"
+
     run_makepkg "$dir"
 
     for pkg in "$dir"/*.pkg.tar.zst; do
