@@ -88,9 +88,15 @@ jobs:
           ref: ${{ inputs.ci_ref }}
           path: .shedos-ci
 
+      # actions/checkout empties a workspace it cannot recognise as a checkout
+      # of what it was asked for, so the caller's takes these scripts with it
+      # unless they leave first.
+      - name: Move the pipeline scripts out of the workspace
+        run: mv .shedos-ci /opt/shedos-ci
+
       - name: Install build dependencies
         run: |
-          bash .shedos-ci/scripts/install-packages.sh base-devel git sudo jq curl
+          bash /opt/shedos-ci/scripts/install-packages.sh base-devel git sudo jq curl
           # archlinux:latest ships an empty keyring; populate it for --syncdeps.
           pacman-key --init
           pacman-key --populate archlinux
@@ -108,7 +114,7 @@ jobs:
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Enable the ShedOS channels
-        run: bash .shedos-ci/scripts/enable-shedos-channels.sh
+        run: bash /opt/shedos-ci/scripts/enable-shedos-channels.sh
 
       - name: Hand the tree to the build user
         run: chown -R builder:builder .
@@ -120,7 +126,7 @@ jobs:
           # request builds a merge of the branch into main, and pushing that
           # would merge the pull request.
           SHEDOS_PKGREL_PUSH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        run: bash .shedos-ci/scripts/build-package.sh "$PACKAGES"
+        run: bash /opt/shedos-ci/scripts/build-package.sh "$PACKAGES"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -161,9 +167,14 @@ jobs:
           ref: ${{ inputs.ci_ref }}
           path: .shedos-ci
 
+      # Same reason as the build job: the caller's checkout empties the
+      # workspace it lands in.
+      - name: Move the pipeline scripts out of the workspace
+        run: mv .shedos-ci /opt/shedos-ci
+
       - name: Install test dependencies
         run: |
-          bash .shedos-ci/scripts/install-packages.sh base-devel git sudo jq curl
+          bash /opt/shedos-ci/scripts/install-packages.sh base-devel git sudo jq curl
           pacman-key --init
           pacman-key --populate archlinux
           # makepkg refuses to run as root, and a suite that only ever runs
@@ -179,7 +190,7 @@ jobs:
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Enable the ShedOS channels
-        run: bash .shedos-ci/scripts/enable-shedos-channels.sh
+        run: bash /opt/shedos-ci/scripts/enable-shedos-channels.sh
 
       # After the channels, because some of them resolve there.
       - name: Install the caller's test packages
@@ -188,7 +199,7 @@ jobs:
         run: |
           read -r -a extra <<< "$TEST_PACKAGES"
           [ ${#extra[@]} -eq 0 ] ||
-              bash .shedos-ci/scripts/install-packages.sh "${extra[@]}"
+              bash /opt/shedos-ci/scripts/install-packages.sh "${extra[@]}"
 
       - name: Fetch the built packages
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -197,7 +208,7 @@ jobs:
           path: dist
 
       - name: Check the verb contract
-        run: bash .shedos-ci/scripts/check-verb-contract.sh dist/*.pkg.tar.zst
+        run: bash /opt/shedos-ci/scripts/check-verb-contract.sh dist/*.pkg.tar.zst
 
       - name: Hand the tree to the test user
         run: chown -R tester:tester .
@@ -209,7 +220,7 @@ jobs:
         run: >-
           sudo -u tester -H
           env "ALLOWED_SKIPS=$ALLOWED_SKIPS" "TEST_ENV=$TEST_ENV"
-          bash .shedos-ci/scripts/run-tests.sh
+          bash /opt/shedos-ci/scripts/run-tests.sh
 
   publish-request:
     needs: [build, test]
@@ -224,7 +235,8 @@ jobs:
       image: archlinux:latest
     steps:
       # Before the install, which is one of these scripts. With no git in the
-      # image yet, the action falls back to the REST API tarball.
+      # image yet, the action falls back to the REST API tarball. This job
+      # never checks the caller out, so the scripts can stay where they land.
       - name: Check out the pipeline scripts
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:

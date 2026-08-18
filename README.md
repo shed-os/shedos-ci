@@ -142,6 +142,8 @@ else was a syntax error under it.
 
 All three install their dependencies through `scripts/install-packages.sh`,
 which is why the pipeline scripts are checked out before anything is installed.
+In the build and test jobs they are then moved to `/opt/shedos-ci`, because the
+caller's checkout empties the workspace it lands in and would take them along.
 A mirror can go on handing out a package database for hours after the pool
 behind it dropped the releases that database names, and pacman then resolves a
 version every mirror answers 404 for. Asking the same host again returns the
@@ -150,6 +152,13 @@ same database, so a failed transaction is retried against the next mirror in
 runs out the job fails with what pacman said. Refresh, upgrade and install are
 one transaction, because installing against a database older than the system
 underneath it is the partial upgrade Arch does not support.
+
+The caller's `test_packages` go in the same way, which means that step now
+upgrades the test container rather than only adding to it. It used to be a bare
+`pacman -S` against whatever database the channel wiring had last pulled down.
+A full upgrade honours `replaces=`, so a ShedOS retirement package can swap
+something out of the test container that a targeted install would have left
+alone. That is the same thing a real machine does with the same packages.
 
 ## Build parity
 
