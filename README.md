@@ -38,6 +38,13 @@ that run. So a package repo that protects `main` cannot use the pipeline as it
 stands — the push is refused, the build goes red, and the answer is to lift the
 protection or move `pkgrel` by hand, never to hand the job a stronger token.
 
+That silence is also what a package repo's tip looks like afterwards: the last
+commit on `main` is a bump nothing ever ran against, and `gh run list` for it
+comes back empty. A tip with no run is the normal state of every repo the
+pipeline has published, not a build that was skipped — the run that matters is
+the one on the commit below it, which is what produced the release the bump was
+raised past.
+
 A package whose `source` pins a git tag — `#tag=$pkgver` — is built from that
 tag and not from the checkout the PKGBUILD sits in, so a change that lands on
 `main` with the tag left where it was would build green and publish the old
