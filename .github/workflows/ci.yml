@@ -29,9 +29,6 @@ jobs:
           # The harness builds a real package, and makepkg refuses to run as root.
           useradd -m tester
 
-      - name: Trust workspace for git
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
       - name: Validate the workflow YAML
         run: |
           for f in .github/workflows/*.yml templates/caller.yml; do
