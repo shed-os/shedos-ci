@@ -97,6 +97,13 @@ staging_db() {
 build_package() {
     local work=$1 db_url=$2
     shift 2
+    build_packages "$work" "$db_url" '["."]' "$@"
+}
+
+# The same for a repository whose packages sit in directories of their own.
+build_packages() {
+    local work=$1 db_url=$2 packages=$3
+    shift 3
     cp /etc/makepkg.conf "$work/makepkg.conf"
     (
         cd "$work" || exit 1
@@ -104,7 +111,7 @@ build_package() {
             SHEDOS_BUILD_USER="$(id -un)" \
             MAKEPKG_CONF="$work/makepkg.conf" \
             "$@" \
-            bash "$repo_root/scripts/build-package.sh" '["."]'
+            bash "$repo_root/scripts/build-package.sh" "$packages"
     ) > "$work/build.log" 2>&1
 }
 
@@ -747,6 +754,79 @@ case_exempt_root_name() {
         not grep -qF 're-cut the tag' "$work/build.log"
 }
 
+# --- case: a package that is one member of a workspace is built out of the
+# whole tree. Cargo resolves it against the manifest and the lock at the root,
+# which sit outside the package directory, so a root that moved past the tag is
+# lag for every member even though no member's own files changed.
+case_workspace_root_guard() {
+    local work
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' RETURN
+
+    fixture_repo "$work"
+
+    # Two members, each a crate the root manifest lists, each its own package.
+    local member
+    git -C "$work" rm -q PKGBUILD
+    for member in alpha beta; do
+        mkdir -p "$work/$member/src"
+        {
+            sed "s/^pkgname=.*/pkgname=shedos-ci-hello-$member/" "$fixture/PKGBUILD"
+            printf 'source=("git+file://%s#tag=$pkgver")\n' "$fixture_remote"
+            printf "sha256sums=('SKIP')\n"
+        } > "$work/$member/PKGBUILD"
+        printf '[package]\nname = "%s"\n' "$member" > "$work/$member/Cargo.toml"
+        printf 'fn main() {}\n' > "$work/$member/src/main.rs"
+    done
+    printf '[workspace]\nmembers = ["alpha", "beta"]\n' > "$work/Cargo.toml"
+    printf 'version = 4\n' > "$work/Cargo.lock"
+    git -C "$work" add -A
+    git -C "$work" -c user.name=harness -c user.email=harness@shedos.invalid \
+        commit -qm 'assemble the members into a workspace'
+    git -C "$work" push -q origin main
+    git -C "$work" -c tag.gpgsign=false tag 1
+    git -C "$work" push -q origin refs/tags/1
+
+    rm -rf "$work/dist"
+    build_packages "$work" 'file:///nonexistent' '["alpha"]' SHEDOS_PKGREL_PUSH=true
+    check 'a workspace level with the tag builds' \
+        [ -f "$work/dist/shedos-ci-hello-alpha-1-1-any.pkg.tar.zst" ]
+
+    printf '[workspace]\nmembers = ["alpha", "beta"]\nresolver = "2"\n' > "$work/Cargo.toml"
+    git -C "$work" -c user.name=harness -c user.email=harness@shedos.invalid \
+        commit -qam 'change the workspace root'
+
+    rm -rf "$work/dist"
+    build_packages "$work" 'file:///nonexistent' '["alpha"]' SHEDOS_PKGREL_PUSH=true
+    check 'a root that moved past the tag stops the build' \
+        grep -qF 're-cut the tag' "$work/build.log"
+    check 'and the root file is named from the package' \
+        grep -qF '../Cargo.toml' "$work/build.log"
+    check 'nothing was built' [ -z "$(ls -A "$work/dist" 2>/dev/null)" ]
+
+    rm -rf "$work/dist"
+    build_packages "$work" 'file:///nonexistent' '["beta"]' SHEDOS_PKGREL_PUSH=true
+    check 'the other member is held to the same root' \
+        grep -qF 're-cut the tag' "$work/build.log"
+
+    # Back to a level tag, then a change inside one member only.
+    git -C "$work" -c tag.gpgsign=false tag -f 1 > /dev/null
+    git -C "$work" push -qf origin refs/tags/1
+    printf 'fn main() { println!("beta"); }\n' > "$work/beta/src/main.rs"
+    git -C "$work" -c user.name=harness -c user.email=harness@shedos.invalid \
+        commit -qam 'change what one member ships'
+
+    rm -rf "$work/dist"
+    build_packages "$work" 'file:///nonexistent' '["alpha"]' SHEDOS_PKGREL_PUSH=true
+    check "one member's own change is not another member's lag" \
+        [ -f "$work/dist/shedos-ci-hello-alpha-1-1-any.pkg.tar.zst" ]
+
+    rm -rf "$work/dist"
+    build_packages "$work" 'file:///nonexistent' '["beta"]' SHEDOS_PKGREL_PUSH=true
+    check 'while the member that changed is still lagging' \
+        grep -qF 'src/main.rs' "$work/build.log"
+}
+
 # --- case: over HTTP an absent staging DB arrives as a 404, and that is still
 # the first-publish path.
 case_staging_db_404() {
@@ -1126,7 +1206,7 @@ for case in case_build case_pkgrel_guard case_pkgrel_push_withheld \
            case_push_gate_matches_publish case_decimal_pkgrel \
            case_pkgrel_literal_match case_makepkg_argv case_build_options \
            case_shedos_channels case_source_tag_guard case_source_date_epoch \
-           case_exempt_root_name \
+           case_exempt_root_name case_workspace_root_guard \
            case_staging_db_404 case_staging_db_unusable case_payload \
            case_payload_build_failure case_rollup_all_pass \
            case_rollup_failure case_rollup_no_suites case_rollup_skip \

@@ -52,7 +52,10 @@ tree. Before anything else, the build that publishes compares the tag against
 `HEAD` for each package directory and stops if they have parted, naming the tag
 and the paths that moved. The PKGBUILD and its install scriptlet are excluded
 because makepkg reads both from the checkout: the pkgrel bump moves the PKGBUILD
-on every republish and that is not lag. A pull request is not stopped — it cannot
+on every republish and that is not lag. A package that is one member of a cargo
+workspace is compared against the manifest and the lock at the repository root
+as well, because that is where its build resolves from and a package directory
+of its own is not where it sits. A pull request is not stopped — it cannot
 tag what it has not merged, and it publishes nothing — but it is told: a build
 with nothing to publish prints which tag it built and where the checkout differs
 from it, or says the two are the same. Without that line a green pull-request

@@ -113,16 +113,38 @@ checkout_owned_roots() {
     done
 }
 
+# What a package built out of a workspace reads from above its own directory.
+# Cargo resolves a member against the manifest at the workspace root and the
+# lock beside it, so a root that moved past the tag builds a member this
+# checkout does not describe — and the diff below is scoped to the package
+# directory, which cannot see a file outside it. Derived rather than assumed:
+# the root has to declare a workspace and the package has to hold a crate that
+# could be in one.
+workspace_root_files() {
+    local dir=$1 root file
+    root=$(git -C "$dir" rev-parse --show-toplevel) || return 0
+    [[ $root != "$dir" ]] || return 0
+    grep -qx '\[workspace\]' "$root/Cargo.toml" 2> /dev/null || return 0
+    [[ -n $(find "$dir" -name Cargo.toml -print -quit) ]] || return 0
+    for file in Cargo.toml Cargo.lock; do
+        [[ -f $root/$file ]] && printf '%s\n' "$file"
+    done
+    return 0
+}
+
 # Where the checkout differs from the tag the build will use, one path per line.
 # The PKGBUILD and its install scriptlet never count, because makepkg reads both
 # from the checkout: the pkgrel guard's own bump moves the PKGBUILD every time
 # and it is not lag. Neither do the directories above, for the same reason —
 # and without that, a package whose pkgver is pinned to the monolith's has no
 # way to answer a test-only refusal, because a new tag name means a new pkgver
-# means a parity failure. Exit 1 means the tag could not be read at all.
+# means a parity failure. What the workspace root holds counts the other way:
+# it is outside the package directory and the build reads it from the tag like
+# any source file. Exit 1 means the tag could not be read at all.
 source_tag_divergence() {
     local dir=$1 tag=$2
-    local prefix install_file path root exempt
+    local prefix install_file path root exempt up climb
+    local -a roots=()
 
     git -C "$dir" fetch --quiet "$PUSH_REMOTE" "refs/tags/$tag" 2> /dev/null || return 1
 
@@ -140,6 +162,18 @@ source_tag_divergence() {
         done
         printf '%s\n' "$path"
     done < <(git -C "$dir" diff --name-only FETCH_HEAD HEAD -- .)
+
+    mapfile -t roots < <(workspace_root_files "$dir")
+    (( ${#roots[@]} > 0 )) || return 0
+
+    # Named from the package's own point of view, like every path above.
+    up='' climb=$prefix
+    while [[ -n $climb ]]; do up+=../; climb=${climb#*/}; done
+
+    while IFS= read -r path; do
+        [[ -n $path ]] || continue
+        printf '%s%s\n' "$up" "$path"
+    done < <(git -C "$dir" diff --name-only FETCH_HEAD HEAD -- "${roots[@]/#/:/}")
 }
 
 # A source pinned to a tag is built from the tag, never from the checkout the
