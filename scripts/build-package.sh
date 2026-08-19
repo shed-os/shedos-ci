@@ -416,7 +416,11 @@ for dir in "${dirs[@]}"; do
     # the run was triggered at whenever the guard above bumped: that bump is a
     # commit of its own and the build happens on top of it. Recorded per
     # package, because a repository building several bumps each of them
-    # separately and the commit moves between them.
+    # separately and the commit moves between them. The key is the first name
+    # a PKGBUILD declares, so a split package records its tree under that name
+    # alone and the rest of the split reaches the request with no build_sha —
+    # the field is left out and the publish is the one this always sent. Every
+    # package in the org today declares one name.
     printf '%s\t%s\n' "$pkgname" "$(git -C "$dir" rev-parse HEAD)" \
         >> "$DIST/BUILD_COMMITS"
 
